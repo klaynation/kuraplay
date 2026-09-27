@@ -1,0 +1,11 @@
+{
+  "bundle": {
+    "resources": {
+      "mpv/windows/mpv.exe": "mpv/mpv.exe"
+    },
+    "targets": [
+      "msi",
+      "nsis"
+    ]
+  }
+}

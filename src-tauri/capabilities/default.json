@@ -1,0 +1,53 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for AnimeOffline",
+  "windows": [
+    "main"
+  ],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "fs:default",
+    "fs:allow-read-dir",
+    "fs:allow-exists",
+    {
+      "identifier": "fs:allow-read-dir",
+      "allow": [
+        "$HOME/**",
+        "C:\\**",
+        "D:\\**",
+        "E:\\**"
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-file",
+      "allow": [
+        "$HOME/**",
+        "C:\\**",
+        "D:\\**",
+        "E:\\**"
+      ]
+    },
+    {
+      "identifier": "fs:allow-read-text-file",
+      "allow": [
+        "$HOME/**",
+        "C:\\**",
+        "D:\\**",
+        "E:\\**"
+      ]
+    },
+    {
+      "identifier": "fs:allow-write-text-file",
+      "allow": [
+        "$HOME/**",
+        "C:\\**",
+        "D:\\**",
+        "E:\\**"
+      ]
+    }
+  ]
+}
