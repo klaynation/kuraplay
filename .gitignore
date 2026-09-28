@@ -1,3 +1,5 @@
+cd "C:\Users\Charlton\Anime offline\AnimeOffline"
+@'
 # Logs
 logs
 *.log
@@ -7,18 +9,28 @@ yarn-error.log*
 pnpm-debug.log*
 lerna-debug.log*
 
+# Dependencies & build output
 node_modules
 dist
 dist-ssr
 *.local
+
+# Tauri / Rust build artifacts
+src-tauri/target/
+src-tauri/gen/
+
+# mpv binaries are downloaded by scripts/fetch-mpv.ps1 (and by CI)
+src-tauri/mpv/
 
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json
 .idea
 .DS_Store
+Thumbs.db
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+'@ | Set-Content -Path .gitignore -Encoding utf8
