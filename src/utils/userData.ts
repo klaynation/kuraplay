@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { UserDataStore, EpisodeProgress } from '../types/userData';
+import { UserDataStore } from '../types/userData';
 
 /**
  * Fetch all watch history and favorites from user_data.json
