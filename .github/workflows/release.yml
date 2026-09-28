@@ -64,9 +64,18 @@ jobs:
       # Item 30: bundle mpv into the Windows installer only. macOS users get it
       # from Homebrew and Linux users from their distro; the app's resolver
       # falls back to PATH / common locations there.
+      # Item 30: fetch mpv, THEN opt the Windows bundle into shipping it.
+      # The resource mapping is injected here (not committed in
+      # tauri.windows.conf.json) so that local builds and `cargo check` never
+      # depend on a downloaded binary existing.
       - name: Bundle mpv (Windows)
         if: matrix.platform == 'windows-latest'
-        run: powershell -ExecutionPolicy Bypass -File scripts/fetch-mpv.ps1
+        run: |
+          powershell -ExecutionPolicy Bypass -File scripts/fetch-mpv.ps1
+          $conf = Get-Content src-tauri/tauri.windows.conf.json -Raw | ConvertFrom-Json
+          $conf.bundle | Add-Member -NotePropertyName "resources" -NotePropertyValue ([pscustomobject]@{ "mpv/windows/mpv.exe" = "mpv/mpv.exe" }) -Force
+          $conf | ConvertTo-Json -Depth 12 | Set-Content src-tauri/tauri.windows.conf.json -Encoding utf8
+          Get-Content src-tauri/tauri.windows.conf.json
 
       - name: Build + publish draft release
         uses: tauri-apps/tauri-action@v0

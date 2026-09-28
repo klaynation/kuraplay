@@ -143,9 +143,20 @@ fn get_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 fn save_library_path(app: tauri::AppHandle, library_path: String) -> Result<(), String> {
     let config_path = get_config_path(&app)?;
 
-    let config = AppConfig {
-        library_path: Some(library_path),
+    // Preserve any existing settings (mpv_path) instead of clobbering them.
+    let mut config: AppConfig = if config_path.exists() {
+        let json = fs::read_to_string(&config_path).map_err(|error| error.to_string())?;
+        serde_json::from_str(&json).unwrap_or(AppConfig {
+            library_path: None,
+            mpv_path: None,
+        })
+    } else {
+        AppConfig {
+            library_path: None,
+            mpv_path: None,
+        }
     };
+    config.library_path = Some(library_path);
 
     let json = serde_json::to_string_pretty(&config)
         .map_err(|error| format!("Failed to parse configuration JSON: {}", error))?;
