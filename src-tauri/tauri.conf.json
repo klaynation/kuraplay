@@ -1,4 +1,4 @@
-{
+﻿{
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "KuraPlay",
   "version": "0.1.0",
@@ -22,12 +22,7 @@
       "csp": null,
       "assetProtocol": {
         "enable": true,
-        "scope": [
-          "$HOME/**",
-          "C:\\**",
-          "D:\\**",
-          "E:\\**"
-        ]
+        "scope": ["$HOME/**", "C:\\**", "D:\\**", "E:\\**"]
       }
     }
   },
@@ -41,12 +36,10 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "licenseFile": "../LICENSE",
     "windows": {
       "nsis": {
-        "license": "../LICENSE",
-        "languages": [
-          "English"
-        ]
+        "languages": ["English"]
       }
     }
   }
