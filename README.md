@@ -141,8 +141,7 @@ are expected until a signing certificate is configured.
 
 ## Licensing notes
 
-KuraPlay's own code: license TBD by the author (add a `LICENSE` file before
-publishing releases publicly).
+KuraPlay's own code: license TBD by the author (will do later).
 
 The Windows installer bundles mpv, which is
 **GPL-2.0-or-later / LGPL-2.1+**. Distributing it is permitted, but keep mpv's
