@@ -153,3 +153,25 @@ license text and source availability information available to users
 Metadata courtesy of [AniList](https://anilist.co) and
 [MyAnimeList](https://myanimelist.net) (via the Jikan API). Playback by
 [mpv](https://mpv.io).
+
+---
+
+## License
+
+KuraPlay is MIT-licensed — see [LICENSE](LICENSE). Swap the copyright holder in
+that file for your legal name if you prefer it over your GitHub handle.
+
+Third-party components shipped or referenced by this project:
+
+| Component | License | How it ships |
+|---|---|---|
+| [mpv](https://mpv.io) | GPL-2.0-or-later / LGPL-2.1+ | Bundled binary on Windows only; launched as a separate process, not linked |
+| [Tauri](https://tauri.app) | MIT / Apache-2.0 | Linked |
+| [React](https://react.dev) | MIT | Bundled in frontend |
+| [rusqlite](https://github.com/rusqlite/rusqlite) | MIT | Linked |
+| AniList / MyAnimeList (Jikan) metadata | respective API terms | Fetched at runtime, cached locally |
+
+Distributing mpv inside the Windows installer is permitted under its license,
+provided its license text and source availability remain discoverable — the
+NSIS installer displays this project's license, and mpv's own terms live at
+<https://mpv.io/licensing>.
