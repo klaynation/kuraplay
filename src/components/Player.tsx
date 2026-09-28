@@ -44,6 +44,14 @@ type Props = {
   onClose: () => void;
   /** When a codec fails, hand straight to mpv instead of showing the card. */
   autoHandoff: boolean;
+  /** Roll into the next episode on a countdown when one finishes. */
+  autoAdvance: boolean;
+  /** Fraction of runtime (0..1) at which an episode counts as completed. */
+  completeAt: number;
+  initialVolume: number;
+  initialRate: number;
+  /** Reports volume/speed changes so the app can remember them. */
+  onPrefs: (volume: number, rate: number) => void;
   /** Hand off to the external player at the current timestamp. */
   onOpenExternal: (path: string, seconds: number) => void;
 };
@@ -52,8 +60,6 @@ const RATES = [1, 1.25, 1.5, 1.75, 2, 0.75];
 const HIDE_CONTROLS_MS = 2600;
 const PERSIST_EVERY_S = 5;
 const NEXT_COUNTDOWN_S = 6;
-/** Past this fraction of duration an episode counts as completed. */
-const COMPLETE_AT = 0.92;
 
 export function formatClock(t: number): string {
   if (!Number.isFinite(t) || t < 0) t = 0;
@@ -74,6 +80,11 @@ export function Player({
   onClose,
   onOpenExternal,
   autoHandoff,
+  autoAdvance,
+  completeAt,
+  initialVolume,
+  initialRate,
+  onPrefs,
 }: Props) {
   const [index, setIndex] = useState(startIndex);
   const episode = episodes[index];
@@ -87,12 +98,13 @@ export function Player({
   const [playing, setPlaying] = useState(false);
   const [time, setTime] = useState(0);
   const [duration, setDuration] = useState(0);
-  const [volume, setVolume] = useState(1);
+  const [volume, setVolume] = useState(initialVolume);
   const [muted, setMuted] = useState(false);
-  const [rate, setRate] = useState(1);
+  const [rate, setRate] = useState(initialRate);
   const [controlsOn, setControlsOn] = useState(true);
   const [failed, setFailed] = useState(false);
   const [nextIn, setNextIn] = useState<number | null>(null);
+  const [nextUpOpen, setNextUpOpen] = useState(false);
 
   const hasNext = index < episodes.length - 1;
   const hasPrev = index > 0;
@@ -101,11 +113,11 @@ export function Player({
 
   const statusFor = useCallback(
     (seconds: number, dur: number): WatchStatus => {
-      if (dur > 0 && seconds >= dur * COMPLETE_AT) return "completed";
+      if (dur > 0 && seconds >= dur * completeAt) return "completed";
       if (seconds > 3) return "in_progress";
       return "unwatched";
     },
-    []
+    [completeAt]
   );
 
   const persist = useCallback(
@@ -139,6 +151,7 @@ export function Player({
       setDuration(0);
       setFailed(false);
       setNextIn(null);
+      setNextUpOpen(false);
       clock.current = { time: 0, duration: 0 };
       lastPersist.current = 0;
       setControlsOn(true);
@@ -278,8 +291,11 @@ export function Player({
     clock.current.time = v.duration || 0;
     onProgress(episode.path, Math.floor(v.duration || 0), Math.floor(v.duration || 0), "completed");
     setPlaying(false);
-    if (hasNext) setNextIn(NEXT_COUNTDOWN_S);
-  }, [episode, hasNext, onProgress]);
+    if (hasNext) {
+      setNextUpOpen(true);
+      if (autoAdvance) setNextIn(NEXT_COUNTDOWN_S);
+    }
+  }, [autoAdvance, episode, hasNext, onProgress]);
 
   // Countdown to the next episode, cancelable.
   useEffect(() => {
@@ -305,6 +321,10 @@ export function Player({
       v.muted = muted;
     }
   }, [volume, muted, index]);
+
+  useEffect(() => {
+    onPrefs(volume, rate);
+  }, [onPrefs, rate, volume]);
 
   if (!episode) return null;
 
@@ -376,7 +396,7 @@ export function Player({
       </div>
 
       {/* next-up countdown */}
-      {nextIn !== null && (
+      {nextUpOpen && (
         <div className="pl-nextup">
           <p>
             Next up: <strong>
@@ -386,10 +406,12 @@ export function Player({
             </strong>
           </p>
           <div className="pl-nextup-actions">
-            <button className="primary-button" onClick={() => { setNextIn(null); next(); }}>
-              Play now ({nextIn})
+            <button className="primary-button" onClick={() => { setNextUpOpen(false); setNextIn(null); next(); }}>
+              {autoAdvance && nextIn !== null ? `Play now (${nextIn})` : "Play next"}
             </button>
-            <button className="secondary-button" onClick={() => setNextIn(null)}>Cancel</button>
+            <button className="secondary-button" onClick={() => { setNextUpOpen(false); setNextIn(null); }}>
+              Cancel
+            </button>
           </div>
         </div>
       )}

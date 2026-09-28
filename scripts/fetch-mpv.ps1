@@ -38,16 +38,28 @@ if (-not $sevenZip) {
 Write-Host "Extracting..."
 & $sevenZip.Source x -y ("-o" + $dest) $tmp | Out-Null
 
-# Builds nest everything one folder deep; flatten so mpv.exe sits in $dest
-$nested = Get-ChildItem $dest -Directory | Select-Object -First 1
-if ($nested) {
-  Get-ChildItem $nested -Recurse -File | ForEach-Object {
+# Flatten, tolerant of ANY archive layout: some builds wrap everything in one
+# folder, others drop several top-level folders (doc/, fonts/, ...) next to
+# mpv.exe. Copy every nested file up to $dest, then remove leftover dirs
+# without ever throwing on a path that vanished mid-loop.
+Get-ChildItem $dest -Directory | ForEach-Object {
+  Get-ChildItem $_.FullName -Recurse -File | ForEach-Object {
     Copy-Item $_.FullName (Join-Path $dest $_.Name) -Force
   }
-  Remove-Item $nested -Recurse -Force
+}
+Get-ChildItem $dest -Directory | ForEach-Object {
+  if (Test-Path $_.FullName) {
+    Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
 
-if (-not (Test-Path (Join-Path $dest "mpv.exe"))) {
+# Last resort: if mpv.exe still is not at the top, find it wherever it hid.
+$exe = Join-Path $dest "mpv.exe"
+if (-not (Test-Path $exe)) {
+  $found = Get-ChildItem $dest -Recurse -Filter "mpv.exe" | Select-Object -First 1
+  if ($found) { Copy-Item $found.FullName $exe -Force }
+}
+if (-not (Test-Path $exe)) {
   throw "mpv.exe not found after extraction - archive layout may have changed."
 }
 
