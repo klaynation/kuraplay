@@ -1,12 +1,16 @@
-# fetch-mpv.ps1 — download the latest community Windows build of mpv into
-# src-tauri/mpv/windows/ so `tauri.windows.conf.json` can bundle it (item 30).
+# fetch-mpv.ps1 - download the latest community Windows build of mpv into
+# src-tauri/mpv/windows/ so the Windows bundle can ship it (item 30).
 #
 # Run from anywhere:  powershell -ExecutionPolicy Bypass -File scripts/fetch-mpv.ps1
 #
+# NOTE: this file must stay pure ASCII. Windows PowerShell 5.1 reads BOM-less
+# scripts as ANSI, so any unicode character (em-dash, smart quote) corrupts
+# parsing on CI runners.
+#
 # LICENSE NOTE: mpv is GPL-2.0-or-later / LGPL-2.1+. Redistributing the binary
-# inside your installer is permitted, but you must keep mpv's license available
-# to users (e.g. ship https://mpv.io/licensing or the COPYING file alongside)
-# and offer the corresponding source/build info on request.
+# inside your installer is permitted, but keep mpv's license available to
+# users (see https://mpv.io/licensing) and offer corresponding source/build
+# info on request.
 
 $ErrorActionPreference = "Stop"
 
@@ -20,7 +24,7 @@ $asset = $release.assets | Where-Object { $_.name -match "^mpv-x86_64-.*\.7z$" }
 if (-not $asset) { throw "No x64 mpv Windows asset found on the latest release." }
 
 $tmp = Join-Path $env:TEMP $asset.name
-Write-Host "Downloading $($asset.name) ..."
+Write-Host ("Downloading " + $asset.name + " ...")
 Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $tmp
 
 $sevenZip = Get-Command 7z -ErrorAction SilentlyContinue
@@ -32,7 +36,7 @@ if (-not $sevenZip) {
 }
 
 Write-Host "Extracting..."
-& $sevenZip.Source x -y "-o$dest" $tmp | Out-Null
+& $sevenZip.Source x -y ("-o" + $dest) $tmp | Out-Null
 
 # Builds nest everything one folder deep; flatten so mpv.exe sits in $dest
 $nested = Get-ChildItem $dest -Directory | Select-Object -First 1
@@ -44,7 +48,7 @@ if ($nested) {
 }
 
 if (-not (Test-Path (Join-Path $dest "mpv.exe"))) {
-  throw "mpv.exe not found after extraction — archive layout may have changed."
+  throw "mpv.exe not found after extraction - archive layout may have changed."
 }
 
-Write-Host "OK: mpv ready at $dest"
+Write-Host ("OK: mpv ready at " + $dest)
