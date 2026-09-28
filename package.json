@@ -1,5 +1,3 @@
-cd "C:\Users\Charlton\Anime offline\AnimeOffline"
-@'
 {
   "name": "kuraplay",
   "private": true,
@@ -29,4 +27,3 @@ cd "C:\Users\Charlton\Anime offline\AnimeOffline"
     "vite": "^8.0.16"
   }
 }
-'@ | Set-Content -Path package.json -Encoding utf8
