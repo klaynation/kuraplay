@@ -41,6 +41,12 @@ jobs:
       - name: Rust toolchain
         uses: dtolnay/rust-toolchain@stable
 
+      # macOS runners are Apple Silicon: a universal .dmg also needs the
+      # Intel target, or tauri's universal build dies after the ARM half.
+      - name: macOS universal targets
+        if: matrix.platform == 'macos-latest'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
