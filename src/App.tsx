@@ -3,6 +3,8 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { readDir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { ContinueWatchingStrip } from "./components/ContinueWatchingStrip";
+import { getCurrentWindow } from "@tauri-apps/api/window";
+import logoMark from "./assets/logo-mark.png";
 import { Player, formatClock, type WatchStatus } from "./components/Player";
 import "./App.css";
 
@@ -686,6 +688,19 @@ function formatRelativeTime(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString(undefined, { month: "short", day: "numeric" });
 }
 
+/** Resolves any CSS color (including color-mix tokens) to a #rrggbb hex. */
+function resolveCssColor(value: string): string {
+  if (typeof document === "undefined") return "#000000";
+  const probe = document.createElement("div");
+  probe.style.color = value.trim() || "#000000";
+  document.body.appendChild(probe);
+  const computed = getComputedStyle(probe).color;
+  probe.remove();
+  const m = computed.match(/\d+/g);
+  if (!m || m.length < 3) return "#000000";
+  return "#" + m.slice(0, 3).map((n) => Number(n).toString(16).padStart(2, "0")).join("");
+}
+
 function formatRating(rating: number): string {
   return (Math.round(rating * 10) / 10).toFixed(1);
 }
@@ -1156,6 +1171,10 @@ function App() {
     .sort((a, b) => b.progress.lastOpenedAt - a.progress.lastOpenedAt)
     .slice(0, 8);
 
+  const watchedEpisodes = Object.values(watchProgress).filter((r) => r.status === "completed").length;
+  const hour = new Date().getHours();
+  const greeting = hour < 5 ? "Late night" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+
   // FIX: clear the scan timer if the app unmounts mid-flight.
   useEffect(() => {
     return () => {
@@ -1289,6 +1308,20 @@ function App() {
   }, [isSidebarCollapsed]);
 
   useEffect(() => { document.title = "KuraPlay"; }, []);
+
+  // Theme the NATIVE titlebar: dark/light mode everywhere, plus caption and
+  // text colors on Windows 11 via DWM. The frame stays native, so maximize,
+  // restore, snapping and repainting remain the OS's job (and stay reliable).
+  useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    getCurrentWindow()
+      .setTheme(theme === "light" ? "light" : "dark")
+      .catch(() => undefined);
+    const styles = getComputedStyle(document.documentElement);
+    const caption = resolveCssColor(styles.getPropertyValue("--surface-1"));
+    const text = resolveCssColor(styles.getPropertyValue("--text-primary"));
+    invoke("set_titlebar_colors", { caption, text, dark: theme !== "light" }).catch(() => undefined);
+  }, [theme, accent]);
 
   useEffect(() => {
     document.documentElement.setAttribute("data-density", density);
@@ -1944,31 +1977,22 @@ function App() {
   );
 
   const renderSidebar = () => {
-    const navItems: { page: Page; label: string; icon: React.ReactNode; badge?: number }[] = [
-      { page: "home", label: "Home", icon: <HomeIcon /> },
-      { page: "favorites", label: "Favorites", icon: <HeartIcon size={18} />, badge: favorites.length || undefined },
-      { page: "history", label: "History", icon: <ClockIcon /> },
+    const navItems: { page: Page; label: string; icon: React.ReactNode; badge?: number; cls: string }[] = [
+      { page: "home", label: "Home", icon: <HomeIcon />, cls: "nav-home" },
+      { page: "favorites", label: "Favorites", icon: <HeartIcon size={18} />, badge: favorites.length || undefined, cls: "nav-fav" },
+      { page: "history", label: "History", icon: <ClockIcon />, cls: "nav-hist" },
     ];
 
     return (
       <aside className={`sidebar ${isSidebarCollapsed ? "collapsed" : ""}`}>
         <div className="sidebar-header">
           <div className="logo">
-            <span className="logo-mark"><LogoGlyph /></span>
+            <span className="logo-mark"><img src={logoMark} alt="" /></span>
             <div className="logo-text">
               <span className="logo-title">Kura<span>Play</span></span>
               <span className="logo-sub">Your anime. Offline.</span>
             </div>
           </div>
-          <button
-            className="sidebar-collapse"
-            onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-            title={`${isSidebarCollapsed ? "Expand" : "Collapse"} sidebar (${IS_MAC ? "⌘" : "Ctrl+"}B)`}
-            aria-label={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-            aria-expanded={!isSidebarCollapsed}
-          >
-            <PanelLeftIcon collapsed={isSidebarCollapsed} />
-          </button>
         </div>
 
         <nav className="sidebar-nav">
@@ -1976,7 +2000,7 @@ function App() {
           {navItems.map((item) => (
             <button
               key={item.page}
-              className={`nav-item ${currentPage === item.page && !selectedAnime ? "active" : ""}`}
+              className={`nav-item ${item.cls} ${currentPage === item.page && !selectedAnime ? "active" : ""}`}
               onClick={() => goToPage(item.page)}
               data-tip={item.label}
             >
@@ -1986,27 +2010,6 @@ function App() {
             </button>
           ))}
         </nav>
-
-        {libraryPath && (
-          <div className="sidebar-stats">
-            <p className="sidebar-stats-title">Your library</p>
-            <div className="sidebar-stats-row">
-              <span className="stat-label"><FolderIcon size={14} /> Titles</span>
-              <strong>{animeFolders.length}</strong>
-            </div>
-            <div className="sidebar-stats-row">
-              <span className="stat-label"><FilmIcon size={14} /> Episodes</span>
-              <strong>{totalEpisodes}</strong>
-            </div>
-            <div className="sidebar-stats-row">
-              <span className="stat-label"><CheckCircleIcon size={14} /> Matched</span>
-              <strong>{matchedPercent}%</strong>
-            </div>
-            <div className="progress-track">
-              <div className="progress-fill" style={{ width: `${matchedPercent}%` }} />
-            </div>
-          </div>
-        )}
 
         <div className="sidebar-footer">
           <button
@@ -2045,6 +2048,17 @@ function App() {
               ))}
             </div>
           )}
+          <button
+            className="nav-item sidebar-collapse-item"
+            onClick={() => setIsSidebarCollapsed((prev) => !prev)}
+            title={`${isSidebarCollapsed ? "Expand" : "Collapse"} sidebar (${IS_MAC ? "⌘" : "Ctrl+"}B)`}
+            aria-label={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            aria-expanded={!isSidebarCollapsed}
+            data-tip={isSidebarCollapsed ? "Expand sidebar" : undefined}
+          >
+            <span className="nav-icon"><PanelLeftIcon collapsed={isSidebarCollapsed} size={18} /></span>
+            {!isSidebarCollapsed && <span className="nav-label">Collapse</span>}
+          </button>
         </div>
       </aside>
     );
@@ -2803,7 +2817,7 @@ function App() {
                 </div>
                 <div className="settings-group">
                   <div className="settings-row about-row">
-                    <span className="logo-mark large"><LogoGlyph /></span>
+                    <span className="logo-mark large"><img src={logoMark} alt="" /></span>
                     <div className="row-text">
                       <div className="row-title">KuraPlay</div>
                       <div className="row-sub">A local-first anime library manager. Metadata is cached to your device for offline use.</div>
@@ -2977,6 +2991,42 @@ function App() {
             <span className="result-count">{displayedAnime.length} of {baseList.length}</span>
           </div>
         </div>
+
+        {!isFavoritesView && (
+          <section className="home-hero">
+            <div className="home-hero-top">
+              <div className="home-hero-text">
+                <span className="home-hero-eyebrow"><LogoGlyph /> Your library</span>
+                <h1>{greeting}</h1>
+              </div>
+              <div className="home-hero-stats">
+                <div className="hero-stat"><span>In progress</span><strong>{continueWatching.length}</strong></div>
+                <div className="hero-stat"><span>Favorites</span><strong>{favorites.length}</strong></div>
+                <div className="hero-stat"><span>Watched</span><strong>{watchedEpisodes}</strong></div>
+              </div>
+            </div>
+            {libraryPath && (
+              <div className="home-hero-library">
+                <div className="library-stat">
+                  <span className="stat-label"><FolderIcon size={14} /> Titles</span>
+                  <strong>{animeFolders.length}</strong>
+                </div>
+                <div className="library-stat">
+                  <span className="stat-label"><FilmIcon size={14} /> Episodes</span>
+                  <strong>{totalEpisodes}</strong>
+                </div>
+                <div className="library-stat library-stat-wide">
+                  <div className="library-stat-head">
+                    <span className="stat-label"><CheckCircleIcon size={14} /> Matched</span>
+                    <strong>{matchedPercent}%</strong>
+                  </div>
+                  <div className="progress-track"><div className="progress-fill" style={{ width: `${matchedPercent}%` }} /></div>
+                </div>
+              </div>
+            )}
+          </section>
+        )}
+
 
         {!isFavoritesView && showContinue && continueWatching.length > 0 && !hasActiveFilters && (
           <section className="continue-watching-section">

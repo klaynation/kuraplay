@@ -356,6 +356,59 @@ fn spawn_player(app: tauri::AppHandle, media_path: String, start_seconds: f64) -
 }
 
 // ==============================
+// Native titlebar theming
+// ==============================
+// Keeps the native window frame (stable maximize/restore/snap) but paints it
+// to match the app theme: immersive dark mode on all supported Windows
+// versions, and caption/text colors on Windows 11+ via DWM attributes 35/36.
+// No-ops everywhere else.
+
+#[tauri::command]
+fn set_titlebar_colors(caption: String, text: String, dark: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        extern "system" {
+            fn GetActiveWindow() -> isize;
+            fn DwmSetWindowAttribute(hwnd: isize, attribute: u32, data: *const u32, size: u32) -> i32;
+        }
+        const DWMWA_USE_IMMERSIVE_DARK_MODE: u32 = 20;
+        const DWMWA_CAPTION_COLOR: u32 = 35;
+        const DWMWA_TEXT_COLOR: u32 = 36;
+
+        fn colorref(hex: &str) -> Option<u32> {
+            let h = hex.trim_start_matches('#');
+            if h.len() != 6 {
+                return None;
+            }
+            let r = u32::from_str_radix(&h[0..2], 16).ok()?;
+            let g = u32::from_str_radix(&h[2..4], 16).ok()?;
+            let b = u32::from_str_radix(&h[4..6], 16).ok()?;
+            Some((b << 16) | (g << 8) | r) // COLORREF is 0x00BBGGRR
+        }
+
+        let hwnd = unsafe { GetActiveWindow() };
+        if hwnd == 0 {
+            return Ok(());
+        }
+        let dark_flag: u32 = if dark { 1 } else { 0 };
+        unsafe {
+            DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &dark_flag, 4);
+            if let Some(c) = colorref(&caption) {
+                DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &c, 4);
+            }
+            if let Some(t) = colorref(&text) {
+                DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, &t, 4);
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (&caption, &text, &dark);
+    }
+    Ok(())
+}
+
+// ==============================
 // Search AniList API
 // ==============================
 
@@ -555,7 +608,8 @@ pub fn run() {
             toggle_favorite,
             resolve_player,
             set_mpv_path,
-            spawn_player
+            spawn_player,
+            set_titlebar_colors
         ])
         .run(tauri::generate_context!())
         .expect("error while running animeoffline application");

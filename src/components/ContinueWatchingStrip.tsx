@@ -290,12 +290,9 @@ export function ContinueWatchingStrip({
       startScroll: el.scrollLeft,
       pointerId: e.pointerId,
     };
-    // Capture on the strip so the drag survives the pointer leaving a card.
-    try {
-      el.setPointerCapture(e.pointerId);
-    } catch {
-      /* older WebKitGTK builds may throw if the pointer is already gone */
-    }
+    // NOTE: pointer capture is deliberately NOT taken here. Capturing on
+    // pointerdown retargets the subsequent click event to the strip, which
+    // swallowed the cards' and play buttons' onClick handlers.
   };
 
   const onPointerMove = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -308,6 +305,13 @@ export function ContinueWatchingStrip({
       if (Math.abs(dx) < DRAG_THRESHOLD_PX) return; // still a click
       d.moved = true;
       setDragging(true);
+      // Capture only once a real drag begins, so the drag survives the
+      // pointer leaving a card without breaking plain clicks.
+      try {
+        el.setPointerCapture(e.pointerId);
+      } catch {
+        /* older WebKitGTK builds may throw if the pointer is already gone */
+      }
     }
     el.scrollLeft = d.startScroll - dx;
     e.preventDefault();
