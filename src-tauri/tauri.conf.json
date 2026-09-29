@@ -49,5 +49,16 @@
       }
     },
     "licenseFile": "../LICENSE"
+  },
+  "plugins": {
+    "updater": {
+      "endpoints": [
+        "https://github.com/klaynation/kuraplay/releases/latest/download/latest.json"
+      ],
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDQyMUU0MDM0MUIzRTQ2NDgKUldSSVJqNGJORUFlUWpDNWROM0tXTmM0Q08xL2dYTG9Gc2RuT0d3MDlxbW9HbVBtNW9PMnZxL3MK",
+      "windows": {
+        "installMode": "passive"
+      }
+    }
   }
 }

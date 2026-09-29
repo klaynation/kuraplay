@@ -409,6 +409,52 @@ fn set_titlebar_colors(caption: String, text: String, dark: bool) -> Result<(), 
 }
 
 // ==============================
+// Poster disk cache (offline finalizer)
+// ==============================
+// Downloads remote cover art once into <app-data>/posters/<hash>.<ext> and
+// returns the local path; the frontend serves it via the asset protocol, so
+// a library that has been online once renders fully offline forever.
+
+#[tauri::command]
+async fn cache_image(app: tauri::AppHandle, url: String) -> Result<String, String> {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|e| e.to_string())?
+        .join("posters");
+    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let mut hasher = DefaultHasher::new();
+    url.hash(&mut hasher);
+    let clean = url.split('?').next().unwrap_or(&url);
+    let raw_ext = clean.rsplit('.').next().unwrap_or("jpg");
+    let ext = if matches!(raw_ext, "jpg" | "jpeg" | "png" | "webp") { raw_ext } else { "jpg" };
+    let path = dir.join(format!("{:x}.{}", hasher.finish(), ext));
+
+    if path.exists() {
+        return Ok(path.to_string_lossy().to_string());
+    }
+
+    let client = Client::new();
+    let bytes = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .bytes()
+        .await
+        .map_err(|e| e.to_string())?;
+
+    fs::write(&path, &bytes).map_err(|e| e.to_string())?;
+    Ok(path.to_string_lossy().to_string())
+}
+
+// ==============================
 // Search AniList API
 // ==============================
 
@@ -569,6 +615,8 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         // FIXED (item 29): the database used to be opened with a relative path
         // ("anime_offline.db"), which resolves against the process working
         // directory — arbitrary for a GUI app, and unwritable in places like
@@ -609,7 +657,8 @@ pub fn run() {
             resolve_player,
             set_mpv_path,
             spawn_player,
-            set_titlebar_colors
+            set_titlebar_colors,
+            cache_image
         ])
         .run(tauri::generate_context!())
         .expect("error while running animeoffline application");

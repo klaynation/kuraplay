@@ -18,6 +18,7 @@
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { convertFileSrc } from "@tauri-apps/api/core";
+import { t } from "../i18n";
 
 export type WatchStatus = "unwatched" | "in_progress" | "completed";
 
@@ -363,20 +364,19 @@ export function Player({
       ) : (
         <div className="pl-fallback">
           <div className="pl-fallback-card">
-            <h3>This file can't play in the built-in player</h3>
+            <h3>{t("This file can't play in the built-in player")}</h3>
             <p>
-              The webview decodes H.264/AAC in mp4, webm and mkv. HEVC, 10-bit
-              x264 and MPEG-TS need the external player.
+              {t("The webview decodes H.264/AAC in mp4, webm and mkv. HEVC, 10-bit x264 and MPEG-TS need the external player.")}
             </p>
             <p className="pl-fallback-path">{episode.path}</p>
             <div className="pl-fallback-actions">
               <button className="primary-button" onClick={() => onOpenExternal(episode.path, clock.current.time)}>
-                Open in mpv at {formatClock(clock.current.time)}
+                {t("Open in mpv at {time}", { time: formatClock(clock.current.time) })}
               </button>
               <button className="secondary-button" onClick={() => setFailed(false)}>
-                Retry built-in
+                {t("Retry built-in")}
               </button>
-              <button className="secondary-button" onClick={onClose}>Close player</button>
+              <button className="secondary-button" onClick={onClose}>{t("Close player")}</button>
             </div>
           </div>
         </div>
@@ -388,7 +388,7 @@ export function Player({
           <strong>{animeTitle}</strong>
           <span>{epLabel}</span>
         </div>
-        <button className="pl-btn" onClick={onClose} aria-label="Close player" title="Close (Esc)">
+        <button className="pl-btn" onClick={onClose} aria-label={t("Close player")} title={t("Close (Esc)")}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
             <path d="M18 6 6 18M6 6l12 12" />
           </svg>
@@ -399,7 +399,7 @@ export function Player({
       {nextUpOpen && (
         <div className="pl-nextup">
           <p>
-            Next up: <strong>
+            {t("Next up:")} <strong>
               {episodes[index + 1]?.episodeNumber != null
                 ? `Episode ${episodes[index + 1].episodeNumber}`
                 : episodes[index + 1]?.name}
@@ -407,10 +407,10 @@ export function Player({
           </p>
           <div className="pl-nextup-actions">
             <button className="primary-button" onClick={() => { setNextUpOpen(false); setNextIn(null); next(); }}>
-              {autoAdvance && nextIn !== null ? `Play now (${nextIn})` : "Play next"}
+              {autoAdvance && nextIn !== null ? t("Play now ({n})", { n: nextIn }) : t("Play next")}
             </button>
             <button className="secondary-button" onClick={() => { setNextUpOpen(false); setNextIn(null); }}>
-              Cancel
+              {t("Cancel")}
             </button>
           </div>
         </div>
@@ -426,7 +426,7 @@ export function Player({
             max={duration || 0}
             step={1}
             value={time}
-            aria-label="Seek"
+            aria-label={t("Seek")}
             onChange={(e) => {
               const v = videoRef.current;
               if (!v) return;
@@ -440,30 +440,30 @@ export function Player({
           />
           <div className="pl-row">
             <div className="pl-cluster">
-              <button className="pl-btn" onClick={togglePlay} aria-label={playing ? "Pause" : "Play"} title="Play/Pause (Space)">
+              <button className="pl-btn" onClick={togglePlay} aria-label={playing ? t("Pause") : t("Play")} title={t("Play/Pause (Space)")}>
                 {playing ? (
                   <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4.5" width="4" height="15" rx="1.2" /><rect x="14" y="4.5" width="4" height="15" rx="1.2" /></svg>
                 ) : (
                   <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5.2v13.6a1 1 0 0 0 1.52.85l10.9-6.8a1 1 0 0 0 0-1.7L9.52 4.35A1 1 0 0 0 8 5.2Z" /></svg>
                 )}
               </button>
-              <button className="pl-btn" onClick={() => seekBy(-10)} aria-label="Back 10 seconds" title="-10s (←)">
+              <button className="pl-btn" onClick={() => seekBy(-10)} aria-label={t("Back 10 seconds")} title={t("-10s (←)")}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M11 17a5 5 0 1 0 1-9.9V4L7.5 7.5 12 11V8.1" /><text x="9.6" y="16.4" fontSize="6.5" fill="currentColor" stroke="none" fontWeight="700">10</text></svg>
               </button>
-              <button className="pl-btn" onClick={() => seekBy(10)} aria-label="Forward 10 seconds" title="+10s (→)">
+              <button className="pl-btn" onClick={() => seekBy(10)} aria-label={t("Forward 10 seconds")} title={t("+10s (→)")}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M13 17a5 5 0 1 1-1-9.9V4l4.5 3.5L12 11V8.1" /><text x="9.6" y="16.4" fontSize="6.5" fill="currentColor" stroke="none" fontWeight="700">10</text></svg>
               </button>
-              <button className="pl-btn" onClick={prev} disabled={!hasPrev} aria-label="Previous episode" title="Previous (P)">
+              <button className="pl-btn" onClick={prev} disabled={!hasPrev} aria-label={t("Previous episode")} title={t("Previous (P)")}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h2.4v14H6zM18 5.6v12.8a1 1 0 0 1-1.53.85l-9.2-6.4a1 1 0 0 1 0-1.7l9.2-6.4A1 1 0 0 1 18 5.6Z" transform="scale(-1,1) translate(-24,0)" /></svg>
               </button>
-              <button className="pl-btn" onClick={next} disabled={!hasNext} aria-label="Next episode" title="Next (N)">
+              <button className="pl-btn" onClick={next} disabled={!hasNext} aria-label={t("Next episode")} title={t("Next (N)")}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h2.4v14H6zM18 5.6v12.8a1 1 0 0 1-1.53.85l-9.2-6.4a1 1 0 0 1 0-1.7l9.2-6.4A1 1 0 0 1 18 5.6Z" /></svg>
               </button>
               <span className="pl-time">{formatClock(time)} / {formatClock(duration)}</span>
             </div>
 
             <div className="pl-cluster">
-              <button className="pl-btn" onClick={() => setMuted((m) => !m)} aria-label={muted ? "Unmute" : "Mute"} title="Mute (M)">
+              <button className="pl-btn" onClick={() => setMuted((m) => !m)} aria-label={muted ? t("Unmute") : t("Mute")} title={t("Mute (M)")}>
                 {muted || volume === 0 ? (
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M11 5 6.5 9H3v6h3.5L11 19V5Z" /><path d="m16 9 5 6M21 9l-5 6" /></svg>
                 ) : (
@@ -477,16 +477,16 @@ export function Player({
                 max={1}
                 step={0.05}
                 value={muted ? 0 : volume}
-                aria-label="Volume"
+                aria-label={t("Volume")}
                 onChange={(e) => { setVolume(Number(e.target.value)); setMuted(false); }}
               />
-              <button className="pl-btn pl-rate" onClick={cycleRate} aria-label="Playback speed" title="Speed (&gt;)">
+              <button className="pl-btn pl-rate" onClick={cycleRate} aria-label={t("Playback speed")} title={t("Speed (>)")}>
                 {rate}×
               </button>
-              <button className="pl-btn" onClick={() => onOpenExternal(episode.path, clock.current.time)} aria-label="Open in external player" title="Open in mpv at current time">
+              <button className="pl-btn" onClick={() => onOpenExternal(episode.path, clock.current.time)} aria-label={t("Open in external player")} title={t("Open in mpv at current time")}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9" /><path d="M18 13v6a1.5 1.5 0 0 1-1.5 1.5h-11A1.5 1.5 0 0 1 4 19V8a1.5 1.5 0 0 1 1.5-1.5H11" /></svg>
               </button>
-              <button className="pl-btn" onClick={toggleFullscreen} aria-label="Fullscreen" title="Fullscreen (F)">
+              <button className="pl-btn" onClick={toggleFullscreen} aria-label={t("Fullscreen")} title={t("Fullscreen (F)")}>
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M8 3H4a1 1 0 0 0-1 1v4M16 3h4a1 1 0 0 1 1 1v4M8 21H4a1 1 0 0 1-1-1v-4M16 21h4a1 1 0 0 0 1-1v-4" /></svg>
               </button>
             </div>

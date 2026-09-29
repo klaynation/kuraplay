@@ -33,4 +33,4 @@ Thumbs.db
 *.njsproj
 *.sln
 *.sw?
-'@ | Set-Content -Path .gitignore -Encoding utf8
+'@ | Set-Content -Path .gitignore -Encoding utf8kuraplay-updater.key*

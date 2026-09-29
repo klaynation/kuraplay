@@ -4,6 +4,11 @@ import { open, save as saveDialog } from "@tauri-apps/plugin-dialog";
 import { readDir, readTextFile, writeTextFile } from "@tauri-apps/plugin-fs";
 import { ContinueWatchingStrip } from "./components/ContinueWatchingStrip";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
+import { check } from "@tauri-apps/plugin-updater";
+import { relaunch } from "@tauri-apps/plugin-process";
+import { appDataDir } from "@tauri-apps/api/path";
+import { t, setLanguage, languageOptions, registerPack } from "./i18n";
 import logoMark from "./assets/logo-mark.png";
 import { Player, formatClock, type WatchStatus } from "./components/Player";
 import "./App.css";
@@ -414,6 +419,11 @@ const DEFAULT_PAGE_KEY = "animeoffline:default-page:v1";
 const DENSITY_KEY = "animeoffline:density:v1";
 const SHOW_CW_KEY = "animeoffline:show-continue:v1";
 const MOTION_KEY = "animeoffline:reduce-motion:v1";
+const LANG_KEY = "animeoffline:lang:v1";
+const TITLE_PREF_KEY = "animeoffline:title-pref:v1";
+const POSTER_CACHE_KEY = "animeoffline:poster-cache:v1";
+const AUTO_CHECK_KEY = "animeoffline:auto-check-updates:v1";
+type TitlePref = "english" | "romaji" | "native";
 type ThemeName = "dark" | "light" | "oled" | "dim";
 type Density = "compact" | "cozy" | "large";
 const ACCENT_KEY = "animeoffline:accent:v1";
@@ -605,6 +615,60 @@ function loadDensity(): Density {
 function loadShowContinue(): boolean {
   if (typeof window === "undefined") return true;
   try { return window.localStorage.getItem(SHOW_CW_KEY) !== "0"; } catch { return true; }
+}
+
+function loadAutoCheck(): boolean {
+  if (typeof window === "undefined") return true;
+  try { return window.localStorage.getItem(AUTO_CHECK_KEY) !== "0"; } catch { return true; }
+}
+
+function loadPosterCache(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  try {
+    const raw = window.localStorage.getItem(POSTER_CACHE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    return typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function loadTitlePref(): TitlePref {
+  if (typeof window === "undefined") return "english";
+  try {
+    const raw = window.localStorage.getItem(TITLE_PREF_KEY) as TitlePref | null;
+    return raw === "romaji" || raw === "native" ? raw : "english";
+  } catch {
+    return "english";
+  }
+}
+
+/** Honour the preferred-title-language setting with sane fallbacks. */
+function pickTitle(
+  titles: { english?: string; romaji?: string; native?: string } | undefined,
+  pref: TitlePref,
+  fallback: string
+): string {
+  const order: Record<TitlePref, ("english" | "romaji" | "native")[]> = {
+    english: ["english", "romaji", "native"],
+    romaji: ["romaji", "english", "native"],
+    native: ["native", "romaji", "english"],
+  };
+  for (const k of order[pref]) {
+    const v = titles?.[k];
+    if (v) return v;
+  }
+  return fallback;
+}
+
+function loadLanguage(): string {
+  if (typeof window === "undefined") return "en";
+  try {
+    return window.localStorage.getItem(LANG_KEY) || "en";
+  } catch {
+    return "en";
+  }
 }
 
 function loadReduceMotion(): boolean {
@@ -909,7 +973,7 @@ function extractBasicMetadata(folder: AnimeFolder): AnimeMetadata {
 // METADATA PROVIDERS & DISK SYNC
 // --------------------------------------------------
 
-async function fetchAniListMetadata(query: string): Promise<AnimeMetadata[]> {
+async function fetchAniListMetadata(query: string, pref: TitlePref): Promise<AnimeMetadata[]> {
   const graphqlQuery = `
     query ($search: String) {
       Page(perPage: 5) {
@@ -945,7 +1009,7 @@ async function fetchAniListMetadata(query: string): Promise<AnimeMetadata[]> {
     const mediaList = json?.data?.Page?.media || [];
 
     return mediaList.map((item: any) => ({
-      title: item.title?.english || item.title?.romaji || query,
+      title: pickTitle(item.title, pref, query),
       alternativeTitles: [item.title?.romaji, item.title?.native].filter(Boolean),
       synopsis: item.description ? item.description.replace(/<[^>]*>?/gm, "") : "No synopsis available.",
       episodeCount: item.episodes || 0,
@@ -968,14 +1032,19 @@ async function fetchAniListMetadata(query: string): Promise<AnimeMetadata[]> {
   }
 }
 
-async function fetchJikanMetadata(query: string): Promise<AnimeMetadata[]> {
+async function fetchJikanMetadata(query: string, pref: TitlePref): Promise<AnimeMetadata[]> {
   try {
     const res = await fetch(`https://api.jikan.moe/v4/anime?q=${encodeURIComponent(query)}&limit=5`);
     if (!res.ok) return [];
 
     const json = await res.json();
     return (json.data || []).map((item: any) => ({
-      title: item.title_english || item.title || query,
+      title:
+        pref === "native"
+          ? item.title_japanese || item.title || query
+          : pref === "romaji"
+            ? item.title || item.title_english || query
+            : item.title_english || item.title || query,
       alternativeTitles: [item.title_japanese, item.title_english].filter(Boolean),
       synopsis: item.synopsis ? item.synopsis.replace(/<[^>]*>?/gm, "") : "No synopsis available.",
       episodeCount: item.episodes || 0,
@@ -997,17 +1066,17 @@ async function fetchJikanMetadata(query: string): Promise<AnimeMetadata[]> {
   }
 }
 
-async function matchAnimeMetadata(folder: AnimeFolder): Promise<{ metadata: AnimeMetadata; matchConfidence: number }> {
+async function matchAnimeMetadata(folder: AnimeFolder, pref: TitlePref): Promise<{ metadata: AnimeMetadata; matchConfidence: number }> {
   const cleanSearchTerm = folder.name
     .replace(/\(\d{4}\)/g, "")
     .replace(/\[.*?\]/g, "")
     .replace(/v\d+/gi, "")
     .trim();
 
-  let results = await fetchAniListMetadata(cleanSearchTerm);
+  let results = await fetchAniListMetadata(cleanSearchTerm, pref);
   if (results.length > 0) return { metadata: results[0], matchConfidence: 95 };
 
-  results = await fetchJikanMetadata(cleanSearchTerm);
+  results = await fetchJikanMetadata(cleanSearchTerm, pref);
   if (results.length > 0) return { metadata: results[0], matchConfidence: 85 };
 
   return { metadata: extractBasicMetadata(folder), matchConfidence: 30 };
@@ -1093,6 +1162,14 @@ function App() {
   const [density, setDensity] = useState<Density>(() => loadDensity());
   const [showContinue, setShowContinue] = useState<boolean>(() => loadShowContinue());
   const [reduceMotion, setReduceMotion] = useState<boolean>(() => loadReduceMotion());
+  const [lang, setLang] = useState<string>(() => loadLanguage());
+  const [titlePref, setTitlePref] = useState<TitlePref>(() => loadTitlePref());
+  const [posterCache, setPosterCache] = useState<Record<string, string>>(() => loadPosterCache());
+  const [appVersion, setAppVersion] = useState("0.0.0");
+  const [updateStatus, setUpdateStatus] = useState("");
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [autoCheckUpdates, setAutoCheckUpdates] = useState<boolean>(() => loadAutoCheck());
+  const [langOptions, setLangOptions] = useState(languageOptions());
   const [preferredPlayer, setPreferredPlayer] = useState<PlayerPref>(() => loadPreferredPlayer());
   const [playerAutoHandoff, setPlayerAutoHandoff] = useState<FallbackPref>(() => loadPlayerAutoHandoff());
   const [autoNext, setAutoNext] = useState<boolean>(() => loadAutoNext());
@@ -1173,7 +1250,7 @@ function App() {
 
   const watchedEpisodes = Object.values(watchProgress).filter((r) => r.status === "completed").length;
   const hour = new Date().getHours();
-  const greeting = hour < 5 ? "Late night" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  const greetingKey = hour < 5 ? "Late night" : hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
 
   // FIX: clear the scan timer if the app unmounts mid-flight.
   useEffect(() => {
@@ -1309,6 +1386,16 @@ function App() {
 
   useEffect(() => { document.title = "KuraPlay"; }, []);
 
+  useEffect(() => {
+    try { window.localStorage.setItem(AUTO_CHECK_KEY, autoCheckUpdates ? "1" : "0"); }
+    catch { /* ignore */ }
+  }, [autoCheckUpdates]);
+
+  useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    getVersion().then(setAppVersion).catch(() => undefined);
+  }, []);
+
   // Theme the NATIVE titlebar: dark/light mode everywhere, plus caption and
   // text colors on Windows 11 via DWM. The frame stays native, so maximize,
   // restore, snapping and repainting remain the OS's job (and stay reliable).
@@ -1344,6 +1431,81 @@ function App() {
     try { window.localStorage.setItem(SHOW_CW_KEY, showContinue ? "1" : "0"); }
     catch { /* ignore */ }
   }, [showContinue]);
+
+  useEffect(() => {
+    try { window.localStorage.setItem(TITLE_PREF_KEY, titlePref); }
+    catch { /* ignore */ }
+  }, [titlePref]);
+
+  useEffect(() => {
+    try { window.localStorage.setItem(POSTER_CACHE_KEY, JSON.stringify(posterCache)); }
+    catch { /* ignore */ }
+  }, [posterCache]);
+
+  // Poster disk cache (offline finalizer): download remote art once into
+  // <app-data>/posters/, then serve it through the asset protocol forever.
+  useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    const missing = animeFolders
+      .map((a) => a.metadata?.posterUrl)
+      .filter((u): u is string => !!u && u.startsWith("http") && !posterCache[u])
+      .slice(0, 25);
+    if (missing.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const updates: Record<string, string> = {};
+      for (const url of missing) {
+        try {
+          updates[url] = await invoke<string>("cache_image", { url });
+        } catch {
+          /* stay remote for this session; retried next launch */
+        }
+      }
+      if (!cancelled && Object.keys(updates).length > 0) {
+        setPosterCache((prev) => ({ ...prev, ...updates }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [animeFolders, posterCache]);
+
+  useEffect(() => {
+    setLanguage(lang);
+    try { window.localStorage.setItem(LANG_KEY, lang); }
+    catch { /* ignore */ }
+    // langOptions in deps: re-applies a saved pack language once packs load.
+  }, [lang, langOptions]);
+
+  // User language packs: <app-data>/langs/*.json, offline by design.
+  useEffect(() => {
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const langsDir = `${await appDataDir()}langs`;
+        const entries = await readDir(langsDir);
+        for (const entry of entries) {
+          if (entry.isDirectory || !entry.name?.endsWith(".json")) continue;
+          try {
+            const dict = JSON.parse(await readTextFile(`${langsDir}/${entry.name}`));
+            const id = entry.name.replace(/\.json$/, "");
+            const label = typeof dict.__label === "string" ? dict.__label : id;
+            delete dict.__label;
+            registerPack(id, label, dict);
+          } catch {
+            /* skip a malformed pack rather than breaking startup */
+          }
+        }
+        if (!cancelled) setLangOptions(languageOptions());
+      } catch {
+        /* no langs directory yet - perfectly fine */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     function handleGlobalKeydown(e: KeyboardEvent) {
@@ -1424,10 +1586,10 @@ function App() {
     e?.stopPropagation();
     setFavorites((prev) => {
       if (prev.includes(folderPath)) {
-        showToast("Removed from Favorites");
+        showToast(t("Removed from Favorites"));
         return prev.filter((p) => p !== folderPath);
       } else {
-        showToast("Added to Favorites");
+        showToast(t("Added to Favorites"));
         return [...prev, folderPath];
       }
     });
@@ -1448,23 +1610,23 @@ function App() {
   };
 
   const handleClearMetadataCache = () => {
-    if (!window.confirm("Clear all cached metadata? You'll need to re-match anime to fetch it again.")) return;
+    if (!window.confirm(t("Clear all cached metadata? You'll need to re-match anime to fetch it again."))) return;
     setMetadataCache(new Map());
     try { window.localStorage.removeItem(METADATA_CACHE_KEY); } catch { /* ignore */ }
-    showToast("Metadata cache cleared.");
+    showToast(t("Metadata cache cleared."));
   };
 
   const handleClearWatchHistory = () => {
-    if (!window.confirm("Clear all watch history? This can't be undone.")) return;
+    if (!window.confirm(t("Clear all watch history? This can't be undone."))) return;
     setWatchProgress({});
-    showToast("Watch history cleared.");
+    showToast(t("Watch history cleared."));
   };
 
   const handleClearFavorites = () => {
     if (favorites.length === 0) return;
-    if (!window.confirm("Remove all favorites?")) return;
+    if (!window.confirm(t("Remove all favorites?"))) return;
     setFavorites([]);
-    showToast("Favorites cleared.");
+    showToast(t("Favorites cleared."));
   };
 
   async function exportBackup() {
@@ -1481,7 +1643,7 @@ function App() {
       }
       const payload = { app: "kuraplay", version: 1, exportedAt: new Date().toISOString(), data };
       await writeTextFile(target, JSON.stringify(payload, null, 2));
-      showToast("Backup exported.");
+      showToast(t("Backup exported."));
     } catch (error) {
       notify("error", "Export failed:\n\n" + String(error));
     }
@@ -1497,7 +1659,7 @@ function App() {
       if (typeof source !== "string") return;
       const parsed = JSON.parse(await readTextFile(source));
       if (!["kuraplay", "anivault", "animeoffline"].includes(parsed?.app) || typeof parsed.data !== "object" || !parsed.data) {
-        notify("error", "That file is not an AnimeOffline backup.");
+        notify("error", t("That file is not a KuraPlay backup."));
         return;
       }
       for (const key of BACKUP_KEYS) {
@@ -1509,7 +1671,7 @@ function App() {
       setTheme(loadTheme());
       setAccent(loadAccent());
       setIsSidebarCollapsed(loadSidebarCollapsed());
-      showToast("Backup restored.");
+      showToast(t("Backup restored."));
     } catch (error) {
       notify("error", "Import failed:\n\n" + String(error));
     }
@@ -1650,7 +1812,7 @@ function App() {
       duration: dur || null,
       status,
     });
-    showToast(`Resume position set to ${formatClock(seconds)}.`);
+    showToast(t("Resume position set to {time}.", { time: formatClock(seconds) }));
   }
 
   const handlePlaybackPrefs = useCallback((volume: number, rate: number) => {
@@ -1692,7 +1854,7 @@ function App() {
     try {
       await invoke("spawn_player", { mediaPath: episodePath, startSeconds });
     } catch (error) {
-      notify("error", "Could not start the external player:\n\n" + String(error));
+      notify("error", t("Could not start the external player.") + "\n\n" + String(error));
     }
   }
 
@@ -1844,8 +2006,11 @@ function App() {
         });
         notify(
           "success",
-          `Library move detected — relinked ${Object.keys(epRenames).length} history, ` +
-            `${Object.keys(favRenames).length} favorite(s) and ${Object.keys(cacheRenames).length} metadata record(s).`
+          t("Library move detected — relinked {h} history, {f} favorites and {m} metadata records.", {
+            h: Object.keys(epRenames).length,
+            f: Object.keys(favRenames).length,
+            m: Object.keys(cacheRenames).length,
+          })
         );
       }
 
@@ -1853,15 +2018,15 @@ function App() {
       setScanMessage(`Scan complete — found ${folders.length} folder(s).`);
     } catch (error) {
       setScanMessage(`Scan failed: ${String(error)}`);
-      notify("error", "Library scan failed.");
+      notify("error", t("Library scan failed."));
     } finally { 
       setScanning(false); 
     }
   }
 
   async function handleRefreshLibrary() {
-    if (!libraryPath) { showToast("No library folder set."); return; }
-    showToast("Refreshing library & checking for new items...");
+    if (!libraryPath) { showToast(t("No library folder set.")); return; }
+    showToast(t("Refreshing library & checking for new items..."));
     await scanLibrary(libraryPath);
   }
 
@@ -1882,7 +2047,7 @@ function App() {
         while (!success && attempts < 3) {
           attempts++;
           try {
-            const { metadata, matchConfidence } = await matchAnimeMetadata(folder);
+            const { metadata, matchConfidence } = await matchAnimeMetadata(folder, titlePref);
             if (metadata && matchConfidence > 50) {
               newCache.set(folder.path, metadata);
               updatedFolders[i] = { ...folder, metadata, isMatched: true, matchConfidence };
@@ -1903,7 +2068,7 @@ function App() {
     setMetadataCache(newCache);
     saveMetadataCache(newCache);
     setMatching(false);
-    showToast("Batch matching finished!");
+    showToast(t("Batch matching finished!"));
   }
 
   const openManualSearch = () => {
@@ -1917,8 +2082,8 @@ function App() {
   const executeManualSearch = async (queryText: string) => {
     if (!queryText.trim()) return;
     setIsSearchingManual(true);
-    let results = await fetchAniListMetadata(queryText);
-    if (results.length === 0) results = await fetchJikanMetadata(queryText);
+    let results = await fetchAniListMetadata(queryText, titlePref);
+    if (results.length === 0) results = await fetchJikanMetadata(queryText, titlePref);
     setManualSearchResults(results);
     setIsSearchingManual(false);
   };
@@ -1950,11 +2115,11 @@ function App() {
       
       await invoke("save_library_path", { libraryPath: selected, library_path: selected });
       
-      notify("success", "Library saved.");
+      notify("success", t("Library saved."));
       await scanLibrary(selected);
       setCurrentPage("home");
     } catch (error) {
-      notify("error", "Could not save library folder.");
+      notify("error", t("Could not save library folder."));
     }
   }
 
@@ -1964,12 +2129,48 @@ function App() {
 
   const activeTheme = THEME_OPTIONS.find((t) => t.id === theme) ?? THEME_OPTIONS[0];
 
+  async function checkForUpdates(manual: boolean) {
+    if (updateBusy) return;
+    setUpdateBusy(true);
+    try {
+      const update = await check();
+      if (!update) {
+        setUpdateStatus("");
+        if (manual) showToast(t("You're on the latest version."));
+        return;
+      }
+      setUpdateStatus(t("Update {v} available - downloading…", { v: update.version }));
+      await update.downloadAndInstall();
+      setUpdateStatus(t("Restart to apply update"));
+      await relaunch();
+    } catch {
+      // Offline or unreachable endpoint: silent for startup checks, gentle for manual.
+      setUpdateStatus("");
+      if (manual) showToast(t("Update check failed (are you offline?)."));
+    } finally {
+      setUpdateBusy(false);
+    }
+  }
+
+  // Startup check: silent, and only when the user left it enabled.
+  useEffect(() => {
+    if (!autoCheckUpdates) return;
+    if (typeof window === "undefined" || !("__TAURI_INTERNALS__" in window)) return;
+    const timer = window.setTimeout(() => { void checkForUpdates(false); }, 8000);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoCheckUpdates, appVersion]);
+
+  /** Remote posters resolve to their on-disk cache copy once downloaded. */
+  const resolvePoster = (url?: string) =>
+    url && posterCache[url] ? convertFileSrc(posterCache[url]) : url;
+
   const refreshButton = (
     <button
       className={`icon-button ${scanning ? "is-busy" : ""}`}
       onClick={handleRefreshLibrary}
-      title="Refresh library"
-      aria-label="Refresh library"
+      title={t("Refresh library")}
+      aria-label={t("Refresh library")}
       disabled={scanning}
     >
       <span className={scanning ? "spin" : ""}><RefreshIcon size={16} /></span>
@@ -1978,9 +2179,9 @@ function App() {
 
   const renderSidebar = () => {
     const navItems: { page: Page; label: string; icon: React.ReactNode; badge?: number; cls: string }[] = [
-      { page: "home", label: "Home", icon: <HomeIcon />, cls: "nav-home" },
-      { page: "favorites", label: "Favorites", icon: <HeartIcon size={18} />, badge: favorites.length || undefined, cls: "nav-fav" },
-      { page: "history", label: "History", icon: <ClockIcon />, cls: "nav-hist" },
+      { page: "home", label: t("Home"), icon: <HomeIcon />, cls: "nav-home" },
+      { page: "favorites", label: t("Favorites"), icon: <HeartIcon size={18} />, badge: favorites.length || undefined, cls: "nav-fav" },
+      { page: "history", label: t("History"), icon: <ClockIcon />, cls: "nav-hist" },
     ];
 
     return (
@@ -1996,7 +2197,7 @@ function App() {
         </div>
 
         <nav className="sidebar-nav">
-          <p className="nav-section-label">Browse</p>
+          <p className="nav-section-label">{t("Browse")}</p>
           {navItems.map((item) => (
             <button
               key={item.page}
@@ -2018,7 +2219,7 @@ function App() {
             data-tip="Settings"
           >
             <span className="nav-icon"><SlidersIcon /></span>
-            <span className="nav-label">Settings</span>
+            <span className="nav-label">{t("Settings")}</span>
           </button>
 
           {isSidebarCollapsed ? (
@@ -2051,13 +2252,13 @@ function App() {
           <button
             className="nav-item sidebar-collapse-item"
             onClick={() => setIsSidebarCollapsed((prev) => !prev)}
-            title={`${isSidebarCollapsed ? "Expand" : "Collapse"} sidebar (${IS_MAC ? "⌘" : "Ctrl+"}B)`}
-            aria-label={isSidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+            title={`${isSidebarCollapsed ? t("Expand sidebar") : t("Collapse sidebar")} (${IS_MAC ? "⌘" : "Ctrl+"}B)`}
+            aria-label={isSidebarCollapsed ? t("Expand sidebar") : t("Collapse sidebar")}
             aria-expanded={!isSidebarCollapsed}
-            data-tip={isSidebarCollapsed ? "Expand sidebar" : undefined}
+            data-tip={isSidebarCollapsed ? t("Expand sidebar") : undefined}
           >
             <span className="nav-icon"><PanelLeftIcon collapsed={isSidebarCollapsed} size={18} /></span>
-            {!isSidebarCollapsed && <span className="nav-label">Collapse</span>}
+            {!isSidebarCollapsed && <span className="nav-label">{t("Collapse")}</span>}
           </button>
         </div>
       </aside>
@@ -2087,7 +2288,7 @@ function App() {
         }}
       >
         <div className="watch-card-poster">
-          <Poster src={item.anime.metadata?.posterUrl} alt={title} />
+          <Poster src={resolvePoster(item.anime.metadata?.posterUrl)} alt={title} />
 
           {/* Resume button — appears on hover */}
           <button
@@ -2217,43 +2418,43 @@ function App() {
       <>
         <header className="topbar">
           <button className="back-button" onClick={() => setSelectedAnime(null)}>
-            <ArrowLeftIcon /> Back
+            <ArrowLeftIcon /> {t("Back")}
           </button>
           <div className="topbar-actions">
             <button className={`secondary-button ${isFav ? "is-active" : ""}`} onClick={(e) => toggleFavorite(selectedAnime.path, e)}>
-              <HeartIcon filled={isFav} /> {isFav ? "Favorited" : "Add to Favorites"}
+              <HeartIcon filled={isFav} /> {isFav ? t("Favorited") : t("Add to Favorites")}
             </button>
             <button className="secondary-button" onClick={openManualSearch}>
-              <WandIcon size={15} /> Fix Metadata
+              <WandIcon size={15} /> {t("Fix Metadata")}
             </button>
           </div>
         </header>
         <div className="content">
           <section className="anime-details">
-            <div className="details-poster"><Poster src={meta?.posterUrl} alt={meta?.title || selectedAnime.name} iconSize={40} /></div>
+            <div className="details-poster"><Poster src={resolvePoster(meta?.posterUrl)} alt={meta?.title || selectedAnime.name} iconSize={40} /></div>
             <div className="details-info">
               <div className="details-eyebrow">
-                <span className="eyebrow">Local anime</span>
+                <span className="eyebrow">{t("Local anime")}</span>
                 {selectedAnime.isMatched ? (
-                  <span className="chip chip-soft"><CheckIcon size={11} /> Matched {selectedAnime.matchConfidence}%</span>
+                  <span className="chip chip-soft"><CheckIcon size={11} /> {t("Matched {pct}%", { pct: selectedAnime.matchConfidence })}</span>
                 ) : (
-                  <span className="chip chip-soft is-warn"><AlertIcon size={11} /> Not matched</span>
+                  <span className="chip chip-soft is-warn"><AlertIcon size={11} /> {t("Not matched")}</span>
                 )}
               </div>
               <h1>{meta?.title || selectedAnime.name}</h1>
               {meta && (
                 <div className="meta-tiles">
                   {meta.rating > 0 && (
-                    <div className="meta-tile highlight"><span>Rating</span><strong><StarIcon size={13} /> {formatRating(meta.rating)}</strong></div>
+                    <div className="meta-tile highlight"><span>{t("Rating")}</span><strong><StarIcon size={13} /> {formatRating(meta.rating)}</strong></div>
                   )}
-                  <div className="meta-tile"><span>Year</span><strong>{meta.year}</strong></div>
-                  <div className="meta-tile"><span>Season</span><strong>{meta.season}</strong></div>
-                  <div className="meta-tile"><span>Episodes</span><strong>{selectedAnime.episodes.length}</strong></div>
-                  <div className="meta-tile"><span>Status</span><strong>{meta.status}</strong></div>
-                  <div className="meta-tile"><span>Studio</span><strong>{meta.studio}</strong></div>
+                  <div className="meta-tile"><span>{t("Year")}</span><strong>{meta.year}</strong></div>
+                  <div className="meta-tile"><span>{t("Season")}</span><strong>{meta.season}</strong></div>
+                  <div className="meta-tile"><span>{t("Episodes")}</span><strong>{selectedAnime.episodes.length}</strong></div>
+                  <div className="meta-tile"><span>{t("Status")}</span><strong>{meta.status}</strong></div>
+                  <div className="meta-tile"><span>{t("Studio")}</span><strong>{meta.studio}</strong></div>
                 </div>
               )}
-              <p className="details-description">{meta?.synopsis || "This anime is stored locally in your library."}</p>
+              <p className="details-description">{meta?.synopsis || t("This anime is stored locally in your library.")}</p>
               {chipList(meta, "full").length > 0 && (
                 <div className="genre-tags">
                   {chipList(meta, "full").map((chip, index) => (
@@ -2264,7 +2465,7 @@ function App() {
               {stats.total > 0 && (
                 <div className="details-progress">
                   <div className="details-progress-head">
-                    <span>Watch progress</span>
+                    <span>{t("Watch progress")}</span>
                     <strong>{stats.watchedCount} / {stats.total}</strong>
                   </div>
                   <div className="progress-track"><div className="progress-fill" style={{ width: `${stats.percent}%` }} /></div>
@@ -2274,14 +2475,14 @@ function App() {
           </section>
           <section>
             <div className="section-header">
-              <h2>Episodes</h2>
+              <h2>{t("Episodes")}</h2>
               <span className="count-pill">{selectedAnime.episodes.length}</span>
             </div>
             {selectedAnime.episodes.length === 0 ? (
               <div className="empty-card">
                 <div className="empty-icon"><AlertIcon size={22} /></div>
-                <h3>No episodes found</h3>
-                <p>No supported video files were found in this folder.</p>
+                <h3>{t("No episodes found")}</h3>
+                <p>{t("No supported video files were found in this folder.")}</p>
               </div>
             ) : (
               <div className="episode-list">
@@ -2297,9 +2498,9 @@ function App() {
                         <div className="episode-number">{isWatched ? <CheckIcon size={14} /> : episode.episodeNumber ?? index + 1}</div>
                         <div className="episode-info">
                           <h3>
-                            Episode {episode.episodeNumber ?? index + 1}
-                            {isWatched && <span className="watched-tag">Watched</span>}
-                            {isInProgress && <span className="watched-tag progress-tag">In progress</span>}
+                            {t("Episode {n}", { n: episode.episodeNumber ?? index + 1 })}
+                            {isWatched && <span className="watched-tag">{t("Watched")}</span>}
+                            {isInProgress && <span className="watched-tag progress-tag">{t("In progress")}</span>}
                           </h3>
                           <p>{episode.name}</p>
                         </div>
@@ -2314,7 +2515,7 @@ function App() {
 
                       <button
                         className="episode-menu-btn"
-                        aria-label={`Options for episode ${episode.episodeNumber ?? index + 1}`}
+                        aria-label={t("Options for episode {n}", { n: episode.episodeNumber ?? index + 1 })}
                         aria-haspopup="menu"
                         aria-expanded={menuFor === episode.path}
                         onClick={() => setMenuFor(menuFor === episode.path ? null : episode.path)}
@@ -2327,13 +2528,13 @@ function App() {
                       {menuFor === episode.path && (
                         <div className="episode-menu" role="menu">
                           <button role="menuitem" onClick={() => { setMenuFor(null); rewatchEpisode(selectedAnime, episode); }}>
-                            Rewatch from start
+                            {t("Rewatch from start")}
                           </button>
                           <button role="menuitem" onClick={() => { setMenuFor(null); setEpisodeWatched(episode, true); }}>
-                            Mark as watched
+                            {t("Mark as watched")}
                           </button>
                           <button role="menuitem" onClick={() => { setMenuFor(null); setEpisodeWatched(episode, false); }}>
-                            Mark as not watched
+                            {t("Mark as not watched")}
                           </button>
                           <button
                             role="menuitem"
@@ -2345,14 +2546,14 @@ function App() {
                               setEditingPath(episode.path);
                             }}
                           >
-                            Set position…
+                            {t("Set position…")}
                           </button>
                         </div>
                       )}
 
                       {editingPath === episode.path && canEditPosition && (
                         <div className="episode-editor">
-                          <span className="episode-editor-label">Resume position</span>
+                          <span className="episode-editor-label">{t("Resume position")}</span>
                           <input
                             className="pl-seek"
                             type="range"
@@ -2368,9 +2569,9 @@ function App() {
                           />
                           <span className="episode-progress-time">{formatClock(editSeconds)} / {formatClock(rec?.durationSeconds ?? 0)}</span>
                           <button className="secondary-button" onClick={() => { savePositionEdit(episode, editSeconds); setEditingPath(null); }}>
-                            Save
+                            {t("Save")}
                           </button>
-                          <button className="secondary-button" onClick={() => setEditingPath(null)}>Cancel</button>
+                          <button className="secondary-button" onClick={() => setEditingPath(null)}>{t("Cancel")}</button>
                         </div>
                       )}
                     </div>
@@ -2394,7 +2595,7 @@ function App() {
       <>
         <header className="topbar">
           <div className="page-heading">
-            <div className="page-title">Settings</div>
+            <div className="page-title">{t("Settings")}</div>
           </div>
           <div className="topbar-actions">{refreshButton}</div>
         </header>
@@ -2408,34 +2609,49 @@ function App() {
                   onClick={() => scrollToSettingsSection(id)}
                 >
                   <Icon size={16} />
-                  <span>{label}</span>
+                  <span>{t(label)}</span>
                 </button>
               ))}
             </nav>
 
             <div className="settings-main">
               <div className="settings-hero">
-                <h1>Settings</h1>
-                <p>Manage your library, metadata, appearance and the data stored on this device.</p>
+                <h1>{t("Settings")}</h1>
+                <p>{t("Manage your library, metadata, appearance and the data stored on this device.")}</p>
               </div>
 
               {/* General */}
               <section id="settings-general" className="settings-section">
                 <div className="settings-section-head">
-                  <h2>General</h2>
-                  <p>How KuraPlay behaves day to day.</p>
+                  <h2>{t("General")}</h2>
+                  <p>{t("How KuraPlay behaves day to day.")}</p>
                 </div>
                 <div className="settings-group">
                   <div className="settings-row">
+                    <div className="row-icon"><TagIcon size={17} /></div>
+                    <div className="row-text">
+                      <div className="row-title">{t("Language")}</div>
+                      <div className="row-sub">{t("Built-in languages plus packs dropped into the langs folder.")}</div>
+                    </div>
+                    <div className="select-wrap small">
+                      <select className="filter-select" value={lang} onChange={(e) => setLang(e.target.value)} aria-label={t("Interface language")}>
+                        {langOptions.map((o) => (
+                          <option key={o.id} value={o.id}>{o.label}</option>
+                        ))}
+                      </select>
+                      <ChevronDownIcon />
+                    </div>
+                  </div>
+                  <div className="settings-row">
                     <div className="row-icon"><HomeIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Start on</div>
-                      <div className="row-sub">The page shown when KuraPlay launches.</div>
+                      <div className="row-title">{t("Start on")}</div>
+                      <div className="row-sub">{t("The page shown when KuraPlay launches.")}</div>
                     </div>
                     <div className="segmented">
                       {(["home", "favorites", "history"] as Page[]).map((p) => (
                         <button key={p} className={defaultPage === p ? "active" : ""} onClick={() => setDefaultPage(p)}>
-                          {p === "home" ? "Home" : p === "favorites" ? "Favorites" : "History"}
+                          {t(p === "home" ? "Home" : p === "favorites" ? "Favorites" : "History")}
                         </button>
                       ))}
                     </div>
@@ -2443,23 +2659,23 @@ function App() {
                   <div className="settings-row">
                     <div className="row-icon"><ClockIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Continue Watching on Home</div>
-                      <div className="row-sub">Show the in-progress strip above the library grid.</div>
+                      <div className="row-title">{t("Continue Watching on Home")}</div>
+                      <div className="row-sub">{t("Show the in-progress strip above the library grid.")}</div>
                     </div>
                     <div className="segmented">
-                      <button className={showContinue ? "active" : ""} onClick={() => setShowContinue(true)}>Show</button>
-                      <button className={!showContinue ? "active" : ""} onClick={() => setShowContinue(false)}>Hide</button>
+                      <button className={showContinue ? "active" : ""} onClick={() => setShowContinue(true)}>{t("Show")}</button>
+                      <button className={!showContinue ? "active" : ""} onClick={() => setShowContinue(false)}>{t("Hide")}</button>
                     </div>
                   </div>
                   <div className="settings-row">
                     <div className="row-icon"><SparkleIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Reduce motion</div>
-                      <div className="row-sub">Flatten animations and transitions everywhere, regardless of the OS setting.</div>
+                      <div className="row-title">{t("Reduce motion")}</div>
+                      <div className="row-sub">{t("Flatten animations and transitions everywhere, regardless of the OS setting.")}</div>
                     </div>
                     <div className="segmented">
-                      <button className={reduceMotion ? "active" : ""} onClick={() => setReduceMotion(true)}>On</button>
-                      <button className={!reduceMotion ? "active" : ""} onClick={() => setReduceMotion(false)}>Off</button>
+                      <button className={reduceMotion ? "active" : ""} onClick={() => setReduceMotion(true)}>{t("On")}</button>
+                      <button className={!reduceMotion ? "active" : ""} onClick={() => setReduceMotion(false)}>{t("Off")}</button>
                     </div>
                   </div>
                 </div>
@@ -2468,43 +2684,43 @@ function App() {
               {/* Library */}
               <section id="settings-library" className="settings-section">
                 <div className="settings-section-head">
-                  <h2>Library</h2>
-                  <p>The folder AnimeOffline scans for your local collection.</p>
+                  <h2>{t("Library")}</h2>
+                  <p>{t("The folder KuraPlay scans for your local collection.")}</p>
                 </div>
                 <div className="settings-group">
                   <div className="settings-row">
                     <div className="row-icon"><FolderIcon /></div>
                     <div className="row-text">
-                      <div className="row-title">Library folder</div>
-                      <div className={`row-sub ${libraryPath ? "mono" : ""}`}>{libraryPath || "No library folder selected yet."}</div>
+                      <div className="row-title">{t("Library folder")}</div>
+                      <div className={`row-sub ${libraryPath ? "mono" : ""}`}>{libraryPath || t("No library folder selected yet.")}</div>
                     </div>
                     <button className="primary-button" onClick={addAnimeLibrary} disabled={scanning}>
-                      <FolderIcon size={15} /> {libraryPath ? "Change" : "Choose folder"}
+                      <FolderIcon size={15} /> {libraryPath ? t("Change") : t("Choose folder")}
                     </button>
                   </div>
                   <div className="settings-row stats-row">
                     <div className="stat-tile">
-                      <span className="stat-tile-label">Titles</span>
+                      <span className="stat-tile-label">{t("Titles")}</span>
                       <strong>{animeFolders.length}</strong>
                     </div>
                     <div className="stat-tile">
-                      <span className="stat-tile-label">Episodes</span>
+                      <span className="stat-tile-label">{t("Episodes")}</span>
                       <strong>{totalEpisodes}</strong>
                     </div>
                     <div className="stat-tile">
-                      <span className="stat-tile-label">Empty folders</span>
+                      <span className="stat-tile-label">{t("Empty folders")}</span>
                       <strong className={emptyFolders > 0 ? "is-warn" : ""}>{emptyFolders}</strong>
                     </div>
                   </div>
                   <div className="settings-row">
                     <div className="row-icon"><RefreshIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Rescan library</div>
-                      <div className="row-sub">Pick up new folders and episodes you've added.</div>
+                      <div className="row-title">{t("Rescan library")}</div>
+                      <div className="row-sub">{t("Pick up new folders and episodes you've added.")}</div>
                     </div>
                     <button className="secondary-button" onClick={handleRefreshLibrary} disabled={scanning || !libraryPath}>
                       <span className={scanning ? "spin" : ""}><RefreshIcon size={14} /></span>
-                      {scanning ? "Scanning…" : "Scan now"}
+                      {scanning ? t("Scanning…") : t("Scan now")}
                     </button>
                   </div>
                 </div>
@@ -2513,8 +2729,8 @@ function App() {
               {/* Metadata */}
               <section id="settings-metadata" className="settings-section">
                 <div className="settings-section-head">
-                  <h2>Metadata & matching</h2>
-                  <p>Match folders against AniList / MyAnimeList. Results are saved to <code>animeoffline.json</code> for offline use.</p>
+                  <h2>{t("Metadata & matching")}</h2>
+                  <p>{t("Match folders against AniList / MyAnimeList. Results are saved to animeoffline.json for offline use.")}</p>
                 </div>
                 <div className="settings-group">
                   <div className="settings-row match-summary">
@@ -2522,13 +2738,13 @@ function App() {
                       <span>{matchedPercent}%</span>
                     </div>
                     <div className="row-text">
-                      <div className="row-title">{matchedCount} of {animeFolders.length} titles matched</div>
+                      <div className="row-title">{t("{matched} of {total} titles matched", { matched: matchedCount, total: animeFolders.length })}</div>
                       <div className="row-sub">
                         {matching
-                          ? `Matching in progress — ${matchProgress.current} of ${matchProgress.total}`
+                          ? t("Matching in progress — {current} of {total}", { current: matchProgress.current, total: matchProgress.total })
                           : animeFolders.length - matchedCount > 0
-                            ? `${animeFolders.length - matchedCount} title${animeFolders.length - matchedCount === 1 ? "" : "s"} still need metadata.`
-                            : animeFolders.length > 0 ? "Everything in your library is matched." : "Add a library to start matching."}
+                            ? t(animeFolders.length - matchedCount === 1 ? "1 title still needs metadata." : "{n} titles still need metadata.", { n: animeFolders.length - matchedCount })
+                            : animeFolders.length > 0 ? t("Everything in your library is matched.") : t("Add a library to start matching.")}
                       </div>
                       <div className="progress-track"><div className="progress-fill" style={{ width: `${matching && matchProgress.total ? Math.round((matchProgress.current / matchProgress.total) * 100) : matchedPercent}%` }} /></div>
                     </div>
@@ -2536,24 +2752,38 @@ function App() {
                   <div className="settings-row">
                     <div className="row-icon"><WandIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Match all anime</div>
-                      <div className="row-sub">Fetch posters, synopses and ratings for unmatched titles.</div>
+                      <div className="row-title">{t("Match all anime")}</div>
+                      <div className="row-sub">{t("Fetch posters, synopses and ratings for unmatched titles.")}</div>
                     </div>
                     <button className="primary-button" onClick={matchAllAnime} disabled={matching || animeFolders.length === 0}>
                       {matching ? <span className="spin"><RefreshIcon size={14} /></span> : <SparkleIcon size={15} />}
-                      {matching ? `Matching ${matchProgress.current}/${matchProgress.total}` : "Match all"}
+                      {matching ? t("Matching {current}/{total}", { current: matchProgress.current, total: matchProgress.total }) : t("Match all")}
                     </button>
                   </div>
                   <div className="settings-row">
                     <div className="row-icon"><RefreshIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Refresh & match</div>
-                      <div className="row-sub">Rescan folders first, then match anything new.</div>
+                      <div className="row-title">{t("Refresh & match")}</div>
+                      <div className="row-sub">{t("Rescan folders first, then match anything new.")}</div>
                     </div>
                     <button className="secondary-button" onClick={() => { handleRefreshLibrary().then(() => matchAllAnime()); }} disabled={scanning || matching || !libraryPath}>
                       <span className={scanning || matching ? "spin" : ""}><RefreshIcon size={14} /></span>
-                      Refresh & match
+                      {t("Refresh & match")}
                     </button>
+                  </div>
+                  <div className="settings-row">
+                    <div className="row-icon"><TagIcon size={17} /></div>
+                    <div className="row-text">
+                      <div className="row-title">{t("Preferred title language")}</div>
+                      <div className="row-sub">{t("Which title shows when a series has several.")}</div>
+                    </div>
+                    <div className="segmented">
+                      {(["english", "romaji", "native"] as TitlePref[]).map((prefOpt) => (
+                        <button key={prefOpt} className={titlePref === prefOpt ? "active" : ""} onClick={() => setTitlePref(prefOpt)}>
+                          {t(prefOpt === "english" ? "English" : prefOpt === "romaji" ? "Romaji" : "Japanese")}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
               </section>
@@ -2561,12 +2791,12 @@ function App() {
               {/* Playback */}
               <section id="settings-playback" className="settings-section">
                 <div className="settings-section-head">
-                  <h2>Playback</h2>
-                  <p>Pick the player that opens your episodes.</p>
+                  <h2>{t("Playback")}</h2>
+                  <p>{t("Pick the player that opens your episodes.")}</p>
                 </div>
                 <div className="settings-group">
                   <div className="settings-row column">
-                    <div className="row-title">Player</div>
+                    <div className="row-title">{t("Player")}</div>
                     <div className="player-options">
                       <button
                         className={`player-option ${preferredPlayer === "builtin" ? "active" : ""}`}
@@ -2575,14 +2805,14 @@ function App() {
                       >
                         <div className="player-option-head">
                           <span className="player-option-icon"><PlayIcon size={14} /></span>
-                          <span className="player-option-name">Built-in player</span>
+                          <span className="player-option-name">{t("Built-in player")}</span>
                           <span className="theme-radio">{preferredPlayer === "builtin" && <CheckIcon size={10} />}</span>
                         </div>
-                        <p className="player-option-pitch">Plays inside AnimeOffline and remembers exactly where you stopped.</p>
+                        <p className="player-option-pitch">{t("Plays inside KuraPlay and remembers exactly where you stopped.")}</p>
                         <ul className="player-option-points">
-                          <li className="good">Resume positions, completion and next-up</li>
-                          <li className="good">Plays mp4, webm and most mkv files</li>
-                          <li className="bad">Can't play .ts, .avi or HEVC / 10-bit files</li>
+                          <li className="good">{t("Resume positions, completion and next-up")}</li>
+                          <li className="good">{t("Plays mp4, webm and most mkv files")}</li>
+                          <li className="bad">{t("Can't play .ts, .avi or HEVC / 10-bit files")}</li>
                         </ul>
                       </button>
                       <button
@@ -2597,35 +2827,34 @@ function App() {
                               <path d="M9 21h6M12 17v4" />
                             </svg>
                           </span>
-                          <span className="player-option-name">mpv (external)</span>
+                          <span className="player-option-name">{t("mpv (external)")}</span>
                           <span className="theme-radio">{preferredPlayer === "mpv" && <CheckIcon size={10} />}</span>
                         </div>
-                        <p className="player-option-pitch">Opens the mpv program in its own window. Plays absolutely everything.</p>
+                        <p className="player-option-pitch">{t("Opens the mpv program in its own window. Plays absolutely everything.")}</p>
                         <ul className="player-option-points">
-                          <li className="good">Every format and codec you throw at it</li>
-                          <li className="bad">AnimeOffline can't read positions back</li>
-                          <li className="bad">No next-up countdown inside the app</li>
+                          <li className="good">{t("Every format and codec you throw at it")}</li>
+                          <li className="bad">{t("KuraPlay can't read positions back")}</li>
+                          <li className="bad">{t("No next-up countdown inside the app")}</li>
                         </ul>
                       </button>
                     </div>
                   </div>
                   <div className="settings-row column">
-                    <div className="row-title">If a file can't play in the built-in player</div>
+                    <div className="row-title">{t("If a file can't play in the built-in player")}</div>
                     <div className="segmented">
-                      <button className={playerAutoHandoff === "ask" ? "active" : ""} onClick={() => setPlayerAutoHandoff("ask")}>Ask me each time</button>
-                      <button className={playerAutoHandoff === "auto" ? "active" : ""} onClick={() => setPlayerAutoHandoff("auto")}>Open mpv straight away</button>
+                      <button className={playerAutoHandoff === "ask" ? "active" : ""} onClick={() => setPlayerAutoHandoff("ask")}>{t("Ask me each time")}</button>
+                      <button className={playerAutoHandoff === "auto" ? "active" : ""} onClick={() => setPlayerAutoHandoff("auto")}>{t("Open mpv straight away")}</button>
                     </div>
                     <p className="settings-desc">
-                      Only applies while the built-in player is selected. "Open mpv straight away" skips the prompt and
-                      launches mpv at your saved position — pick it if most of your library is .ts or HEVC.
+                      {t('Only applies while the built-in player is selected. "Open mpv straight away" skips the prompt and launches mpv at your saved position — pick it if most of your library is .ts or HEVC.')}
                     </p>
                   </div>
                   <div className="settings-row">
                     <div className="row-icon"><FolderIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">mpv location</div>
+                      <div className="row-title">{t("mpv location")}</div>
                       <div className={`row-sub ${mpvPath ? "mono" : ""}`}>
-                        {mpvPath ?? "Not found. KuraPlay checks a bundled copy, your PATH, and common install folders automatically."}
+                        {mpvPath ?? t("Not found. KuraPlay checks a bundled copy, your PATH, and common install folders automatically.")}
                       </div>
                     </div>
                     <div className="row-actions">
@@ -2640,7 +2869,7 @@ function App() {
                           })();
                         }}
                       >
-                        Choose…
+                        {t("Choose…")}
                       </button>
                       <button
                         className="secondary-button"
@@ -2648,26 +2877,26 @@ function App() {
                           void invoke("set_mpv_path", { path: null }).then(() => refreshMpvPath()).catch(() => undefined);
                         }}
                       >
-                        Auto
+                        {t("Auto")}
                       </button>
                     </div>
                   </div>
                   <div className="settings-row">
                     <div className="row-icon"><PlayIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Auto-play next episode</div>
-                      <div className="row-sub">Roll straight into the next episode after a short countdown. Off shows a card you click instead.</div>
+                      <div className="row-title">{t("Auto-play next episode")}</div>
+                      <div className="row-sub">{t("Roll straight into the next episode after a short countdown. Off shows a card you click instead.")}</div>
                     </div>
                     <div className="segmented">
-                      <button className={autoNext ? "active" : ""} onClick={() => setAutoNext(true)}>On</button>
-                      <button className={!autoNext ? "active" : ""} onClick={() => setAutoNext(false)}>Off</button>
+                      <button className={autoNext ? "active" : ""} onClick={() => setAutoNext(true)}>{t("On")}</button>
+                      <button className={!autoNext ? "active" : ""} onClick={() => setAutoNext(false)}>{t("Off")}</button>
                     </div>
                   </div>
                   <div className="settings-row">
                     <div className="row-icon"><CheckCircleIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Count an episode as watched at</div>
-                      <div className="row-sub">How far you need to get before it ticks off the series progress and leaves Continue Watching.</div>
+                      <div className="row-title">{t("Count an episode as watched at")}</div>
+                      <div className="row-sub">{t("How far you need to get before it ticks off the series progress and leaves Continue Watching.")}</div>
                     </div>
                     <div className="segmented">
                       {[85, 90, 95].map((p) => (
@@ -2678,12 +2907,12 @@ function App() {
                   <div className="settings-row">
                     <div className="row-icon"><SlidersIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Remember volume & speed</div>
-                      <div className="row-sub">Reopen the player with the volume and playback speed you last used.</div>
+                      <div className="row-title">{t("Remember volume & speed")}</div>
+                      <div className="row-sub">{t("Reopen the player with the volume and playback speed you last used.")}</div>
                     </div>
                     <div className="segmented">
-                      <button className={rememberPlayback ? "active" : ""} onClick={() => setRememberPlayback(true)}>On</button>
-                      <button className={!rememberPlayback ? "active" : ""} onClick={() => setRememberPlayback(false)}>Off</button>
+                      <button className={rememberPlayback ? "active" : ""} onClick={() => setRememberPlayback(true)}>{t("On")}</button>
+                      <button className={!rememberPlayback ? "active" : ""} onClick={() => setRememberPlayback(false)}>{t("Off")}</button>
                     </div>
                   </div>
                 </div>
@@ -2692,12 +2921,12 @@ function App() {
               {/* Appearance */}
               <section id="settings-appearance" className="settings-section">
                 <div className="settings-section-head">
-                  <h2>Appearance</h2>
-                  <p>Theme and accent color apply everywhere instantly.</p>
+                  <h2>{t("Appearance")}</h2>
+                  <p>{t("Theme and accent color apply everywhere instantly.")}</p>
                 </div>
                 <div className="settings-group">
                   <div className="settings-row column">
-                    <div className="row-title">Theme</div>
+                    <div className="row-title">{t("Theme")}</div>
                     <div className="theme-options">
                       {THEME_OPTIONS.map((opt) => (
                         <button key={opt.id} className={`theme-option ${theme === opt.id ? "active" : ""}`} onClick={() => setTheme(opt.id)}>
@@ -2714,18 +2943,18 @@ function App() {
                     </div>
                   </div>
                   <div className="settings-row column">
-                    <div className="row-title">Card size</div>
+                    <div className="row-title">{t("Card size")}</div>
                     <div className="segmented">
                       {(["compact", "cozy", "large"] as Density[]).map((d) => (
                         <button key={d} className={density === d ? "active" : ""} onClick={() => setDensity(d)}>
-                          {d === "compact" ? "Compact" : d === "cozy" ? "Cozy" : "Large"}
+                          {t(d === "compact" ? "Compact" : d === "cozy" ? "Cozy" : "Large")}
                         </button>
                       ))}
                     </div>
-                    <p className="settings-desc">Applies to the library grid, the history grid and the Continue Watching strip.</p>
+                    <p className="settings-desc">{t("Applies to the library grid, the history grid and the Continue Watching strip.")}</p>
                   </div>
                   <div className="settings-row column">
-                    <div className="row-title">Accent color</div>
+                    <div className="row-title">{t("Accent color")}</div>
                     <div className="accent-options">
                       {ACCENT_PRESETS.map((preset) => (
                         <button
@@ -2748,63 +2977,62 @@ function App() {
               {/* Data */}
               <section id="settings-data" className="settings-section">
                 <div className="settings-section-head">
-                  <h2>Data & storage</h2>
-                  <p>Cached metadata, favorites and watch history live only on this device.</p>
+                  <h2>{t("Data & Storage")}</h2>
+                  <p>{t("Cached metadata, favorites and watch history live only on this device.")}</p>
                 </div>
                 <div className="settings-group">
                   <div className="settings-row">
                     <div className="row-icon"><DatabaseIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Metadata cache</div>
-                      <div className="row-sub">{metadataCache.size} cached entr{metadataCache.size === 1 ? "y" : "ies"}</div>
+                      <div className="row-title">{t("Metadata cache")}</div>
+                      <div className="row-sub">{t("{n} cached entries", { n: metadataCache.size })}</div>
                     </div>
                     <button className="secondary-button danger" onClick={handleClearMetadataCache} disabled={metadataCache.size === 0}>
-                      <TrashIcon size={14} /> Clear
+                      <TrashIcon size={14} /> {t("Clear")}
                     </button>
                   </div>
                   <div className="settings-row">
                     <div className="row-icon"><ClockIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Watch history</div>
-                      <div className="row-sub">{trackedEpisodes} tracked episode{trackedEpisodes === 1 ? "" : "s"}</div>
+                      <div className="row-title">{t("Watch history")}</div>
+                      <div className="row-sub">{t(trackedEpisodes === 1 ? "1 tracked episode" : "{n} tracked episodes", { n: trackedEpisodes })}</div>
                     </div>
                     <button className="secondary-button danger" onClick={handleClearWatchHistory} disabled={trackedEpisodes === 0}>
-                      <TrashIcon size={14} /> Clear
+                      <TrashIcon size={14} /> {t("Clear")}
                     </button>
                   </div>
                   <div className="settings-row">
                     <div className="row-icon"><HeartIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Favorites</div>
-                      <div className="row-sub">{favorites.length} saved title{favorites.length === 1 ? "" : "s"}</div>
+                      <div className="row-title">{t("Favorites")}</div>
+                      <div className="row-sub">{t(favorites.length === 1 ? "1 saved title" : "{n} saved titles", { n: favorites.length })}</div>
                     </div>
                     <button className="secondary-button danger" onClick={handleClearFavorites} disabled={favorites.length === 0}>
-                      <TrashIcon size={14} /> Clear
+                      <TrashIcon size={14} /> {t("Clear")}
                     </button>
                   </div>
                   <div className="settings-row">
                     <div className="row-icon"><FolderIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Moved or renamed your library?</div>
+                      <div className="row-title">{t("Moved or renamed your library?")}</div>
                       <div className="row-sub">
-                        A rescan re-links history, favorites and cached metadata to the new paths automatically —
-                        changing a drive letter or folder name no longer loses anything.
+                        {t("A rescan re-links history, favorites and cached metadata to the new paths automatically — changing a drive letter or folder name no longer loses anything.")}
                       </div>
                     </div>
                     <button className="secondary-button" onClick={handleRefreshLibrary} disabled={scanning || !libraryPath}>
                       <span className={scanning ? "spin" : ""}><RefreshIcon size={14} /></span>
-                      Rescan & relink
+                      {t("Rescan & relink")}
                     </button>
                   </div>
                   <div className="settings-row">
                     <div className="row-icon"><DatabaseIcon size={17} /></div>
                     <div className="row-text">
-                      <div className="row-title">Backup & restore</div>
-                      <div className="row-sub">Export or import history, favorites and settings as a JSON file.</div>
+                      <div className="row-title">{t("Backup & restore")}</div>
+                      <div className="row-sub">{t("Export or import history, favorites and settings as a JSON file.")}</div>
                     </div>
                     <div className="row-actions">
-                      <button className="secondary-button" onClick={() => { void exportBackup(); }}>Export</button>
-                      <button className="secondary-button" onClick={() => { void importBackup(); }}>Import</button>
+                      <button className="secondary-button" onClick={() => { void exportBackup(); }}>{t("Export")}</button>
+                      <button className="secondary-button" onClick={() => { void importBackup(); }}>{t("Import")}</button>
                     </div>
                   </div>
                 </div>
@@ -2813,19 +3041,48 @@ function App() {
               {/* About */}
               <section id="settings-about" className="settings-section">
                 <div className="settings-section-head">
-                  <h2>About</h2>
+                  <h2>{t("About")}</h2>
                 </div>
                 <div className="settings-group">
+                  <div className="settings-row">
+                    <div className="row-icon"><RefreshIcon size={17} /></div>
+                    <div className="row-text">
+                      <div className="row-title">{t("Updates")}</div>
+                      <div className="row-sub">
+                        {updateStatus || t("Current version {v}", { v: appVersion })}
+                      </div>
+                    </div>
+                    <div className="row-actions">
+                      <button
+                        className="secondary-button"
+                        disabled={updateBusy}
+                        onClick={() => { void checkForUpdates(true); }}
+                      >
+                        {updateBusy ? t("Checking for updates…") : t("Check for updates")}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="settings-row">
+                    <div className="row-icon"><SparkleIcon size={17} /></div>
+                    <div className="row-text">
+                      <div className="row-title">{t("Check for updates at startup")}</div>
+                      <div className="row-sub">{t("Silent check a few seconds after launch; offline simply does nothing.")}</div>
+                    </div>
+                    <div className="segmented">
+                      <button className={autoCheckUpdates ? "active" : ""} onClick={() => setAutoCheckUpdates(true)}>{t("On")}</button>
+                      <button className={!autoCheckUpdates ? "active" : ""} onClick={() => setAutoCheckUpdates(false)}>{t("Off")}</button>
+                    </div>
+                  </div>
                   <div className="settings-row about-row">
                     <span className="logo-mark large"><img src={logoMark} alt="" /></span>
                     <div className="row-text">
                       <div className="row-title">KuraPlay</div>
-                      <div className="row-sub">A local-first anime library manager. Metadata is cached to your device for offline use.</div>
+                      <div className="row-sub">{t("A local-first anime library manager. Metadata is cached to your device for offline use.")}</div>
                     </div>
                   </div>
                   <div className="settings-row">
                     <div className="row-text">
-                      <div className="row-title">Powered by</div>
+                      <div className="row-title">{t("Powered by")}</div>
                       <div className="source-chips">
                         <span className="genre-tag">AniList</span>
                         <span className="genre-tag">MyAnimeList · Jikan</span>
@@ -2850,7 +3107,7 @@ function App() {
       <>
         <header className="topbar">
           <div className="page-heading">
-            <div className="page-title">Watch History</div>
+            <div className="page-title">{t("Watch History")}</div>
             {allHistory.length > 0 && <span className="count-pill">{allHistory.length}</span>}
           </div>
           <div className="topbar-actions">{refreshButton}</div>
@@ -2859,8 +3116,8 @@ function App() {
           {allHistory.length === 0 ? (
             <div className="empty-card">
               <div className="empty-icon"><ClockIcon size={22} /></div>
-              <h3>No history yet</h3>
-              <p>Episodes you play will automatically appear here.</p>
+              <h3>{t("No history yet")}</h3>
+              <p>{t("Episodes you play will automatically appear here.")}</p>
             </div>
           ) : (
             <div className="watch-grid">
@@ -2905,7 +3162,7 @@ function App() {
     <>
       <header className="topbar">
         <div className="page-heading">
-          <div className="page-title">{isFavoritesView ? "Favorites" : "Home"}</div>
+          <div className="page-title">{isFavoritesView ? t("Favorites") : t("Home")}</div>
           <span className="count-pill">{baseList.length}</span>
         </div>
         <div className="topbar-actions">
@@ -2921,17 +3178,17 @@ function App() {
               <input
                 ref={searchInputRef}
                 type="text"
-                placeholder={isFavoritesView ? "Search your favorites" : "Search your library"}
+                placeholder={isFavoritesView ? t("Search your favorites") : t("Search your library")}
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Escape") { setSearchQuery(""); (e.target as HTMLInputElement).blur(); } }}
-                aria-label="Search library"
+                aria-label={t("Search library")}
               />
               {searchQuery ? (
                 <button
                   className="search-clear"
                   onClick={() => { setSearchQuery(""); searchInputRef.current?.focus(); }}
-                  aria-label="Clear search"
+                  aria-label={t("Clear search")}
                 >
                   <XIcon size={13} />
                 </button>
@@ -2942,11 +3199,11 @@ function App() {
 
             <div className="select-wrap">
               <SortIcon className="select-lead" size={14} />
-              <select className="filter-select" value={sortBy} onChange={(e) => setSortBy(e.target.value as any)} aria-label="Sort by">
-                <option value="title">Title (A–Z)</option>
-                <option value="rating">Rating</option>
-                <option value="year">Year</option>
-                <option value="episodes">Episode count</option>
+              <select className="filter-select" value={sortBy} onChange={(e) => setSortBy(e.target.value as any)} aria-label={t("Sort by")}>
+                <option value="title">{t("Title (A–Z)")}</option>
+                <option value="rating">{t("Rating")}</option>
+                <option value="year">{t("Year")}</option>
+                <option value="episodes">{t("Episode count")}</option>
               </select>
               <ChevronDownIcon />
             </div>
@@ -2956,7 +3213,7 @@ function App() {
             <div className="segmented">
               {(["All", "Completed", "Airing", "Not yet released"] as const).map((s) => (
                 <button key={s} className={statusFilter === s ? "active" : ""} onClick={() => setStatusFilter(s)}>
-                  {s === "Not yet released" ? "Upcoming" : s}
+                  {t(s === "Not yet released" ? "Upcoming" : s)}
                 </button>
               ))}
             </div>
@@ -2964,8 +3221,8 @@ function App() {
             {availableGenres.length > 0 && (
               <div className="select-wrap small">
                 <TagIcon className="select-lead" size={13} />
-                <select className="filter-select" value={genreFilter} onChange={(e) => setGenreFilter(e.target.value)} aria-label="Genre">
-                  <option value="All">All genres</option>
+                <select className="filter-select" value={genreFilter} onChange={(e) => setGenreFilter(e.target.value)} aria-label={t("Genre")}>
+                  <option value="All">{t("All genres")}</option>
                   {availableGenres.map((g) => <option key={g} value={g}>{g}</option>)}
                 </select>
                 <ChevronDownIcon />
@@ -2974,21 +3231,21 @@ function App() {
 
             <div className="select-wrap small">
               <CheckCircleIcon className="select-lead" size={13} />
-              <select className="filter-select" value={matchFilter} onChange={(e) => setMatchFilter(e.target.value as any)} aria-label="Match state">
-                <option value="All">Any match state</option>
-                <option value="Matched">Matched only</option>
-                <option value="Unmatched">Unmatched only</option>
+              <select className="filter-select" value={matchFilter} onChange={(e) => setMatchFilter(e.target.value as any)} aria-label={t("Match state")}>
+                <option value="All">{t("Any match state")}</option>
+                <option value="Matched">{t("Matched only")}</option>
+                <option value="Unmatched">{t("Unmatched only")}</option>
               </select>
               <ChevronDownIcon />
             </div>
 
             {hasActiveFilters && (
               <button className="search-filter-clear" onClick={clearAllFilters}>
-                <XIcon size={12} /> Clear filters
+                <XIcon size={12} /> {t("Clear filters")}
               </button>
             )}
 
-            <span className="result-count">{displayedAnime.length} of {baseList.length}</span>
+            <span className="result-count">{t("{shown} of {total}", { shown: displayedAnime.length, total: baseList.length })}</span>
           </div>
         </div>
 
@@ -2996,28 +3253,28 @@ function App() {
           <section className="home-hero">
             <div className="home-hero-top">
               <div className="home-hero-text">
-                <span className="home-hero-eyebrow"><LogoGlyph /> Your library</span>
-                <h1>{greeting}</h1>
+                <span className="home-hero-eyebrow"><LogoGlyph /> {t("Your library")}</span>
+                <h1>{t(greetingKey)}</h1>
               </div>
               <div className="home-hero-stats">
-                <div className="hero-stat"><span>In progress</span><strong>{continueWatching.length}</strong></div>
-                <div className="hero-stat"><span>Favorites</span><strong>{favorites.length}</strong></div>
-                <div className="hero-stat"><span>Watched</span><strong>{watchedEpisodes}</strong></div>
+                <div className="hero-stat"><span>{t("In progress")}</span><strong>{continueWatching.length}</strong></div>
+                <div className="hero-stat"><span>{t("Favorites")}</span><strong>{favorites.length}</strong></div>
+                <div className="hero-stat"><span>{t("Watched")}</span><strong>{watchedEpisodes}</strong></div>
               </div>
             </div>
             {libraryPath && (
               <div className="home-hero-library">
                 <div className="library-stat">
-                  <span className="stat-label"><FolderIcon size={14} /> Titles</span>
+                  <span className="stat-label"><FolderIcon size={14} /> {t("Titles")}</span>
                   <strong>{animeFolders.length}</strong>
                 </div>
                 <div className="library-stat">
-                  <span className="stat-label"><FilmIcon size={14} /> Episodes</span>
+                  <span className="stat-label"><FilmIcon size={14} /> {t("Episodes")}</span>
                   <strong>{totalEpisodes}</strong>
                 </div>
                 <div className="library-stat library-stat-wide">
                   <div className="library-stat-head">
-                    <span className="stat-label"><CheckCircleIcon size={14} /> Matched</span>
+                    <span className="stat-label"><CheckCircleIcon size={14} /> {t("Matched")}</span>
                     <strong>{matchedPercent}%</strong>
                   </div>
                   <div className="progress-track"><div className="progress-fill" style={{ width: `${matchedPercent}%` }} /></div>
@@ -3031,21 +3288,21 @@ function App() {
         {!isFavoritesView && showContinue && continueWatching.length > 0 && !hasActiveFilters && (
           <section className="continue-watching-section">
             <div className="section-header">
-              <h2>Continue Watching</h2>
+              <h2>{t("Continue Watching")}</h2>
               <div className="section-header-actions">
                 <button
                   className="surprise-btn"
                   onClick={pickRandomAnime}
-                  title="Pick a random anime"
+                  title={t("Pick a random anime")}
                   disabled={animeFolders.length === 0}
                 >
                   <DiceIcon size={14} />
-                  Surprise me
+                  {t("Surprise me")}
                 </button>
-                <button className="text-button" onClick={() => goToPage("history")}>View all</button>
+                <button className="text-button" onClick={() => goToPage("history")}>{t("View all")}</button>
               </div>
             </div>
-            <ContinueWatchingStrip label="Continue Watching">
+            <ContinueWatchingStrip label={t("Continue Watching")}>
               {continueWatching.map((item) => (
                 <div key={item.anime.path} role="listitem" className="cw-item">
                   {renderWatchCard(item)}
@@ -3057,7 +3314,7 @@ function App() {
 
         <section>
           <div className="section-header">
-            <h2>{isFavoritesView ? "Your Favorites" : "All Anime"}</h2>
+            <h2>{isFavoritesView ? t("Your Favorites") : t("All Anime")}</h2>
           </div>
 
           {displayedAnime.length === 0 ? (
@@ -3065,12 +3322,12 @@ function App() {
               <div className="empty-icon">
                 {hasActiveFilters ? <SearchIcon size={22} /> : isFavoritesView ? <HeartIcon size={22} /> : <FilmIcon size={22} />}
               </div>
-              <h3>{hasActiveFilters ? "No matches found" : (isFavoritesView ? "No favorites yet" : "Your library is empty")}</h3>
-              <p>{hasActiveFilters ? "Try adjusting your search or filters." : (isFavoritesView ? "Add shows to your favorites to see them here." : "Add an anime folder to start building your offline library.")}</p>
+              <h3>{hasActiveFilters ? t("No matches found") : (isFavoritesView ? t("No favorites yet") : t("Your library is empty"))}</h3>
+              <p>{hasActiveFilters ? t("Try adjusting your search or filters.") : (isFavoritesView ? t("Add shows to your favorites to see them here.") : t("Add an anime folder to start building your offline library."))}</p>
               {hasActiveFilters ? (
-                <button className="secondary-button" onClick={clearAllFilters}>Clear filters</button>
+                <button className="secondary-button" onClick={clearAllFilters}>{t("Clear filters")}</button>
               ) : !isFavoritesView && !libraryPath ? (
-                <button className="primary-button" onClick={addAnimeLibrary}><FolderIcon size={15} /> Add library</button>
+                <button className="primary-button" onClick={addAnimeLibrary}><FolderIcon size={15} /> {t("Add library")}</button>
               ) : null}
             </div>
           ) : (
@@ -3082,7 +3339,7 @@ function App() {
                 return (
                   <button className="anime-card" key={anime.path} onClick={() => setSelectedAnime(anime)}>
                     <div className="anime-poster">
-                      <Poster src={anime.metadata?.posterUrl} alt={title} />
+                      <Poster src={resolvePoster(anime.metadata?.posterUrl)} alt={title} />
                       <div className="poster-badges">
                         {anime.isMatched ? (
                           <span className="chip chip-match" title="Metadata match confidence">
