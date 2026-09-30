@@ -231,5 +231,17 @@
   "That file is not a KuraPlay backup.": "Ese archivo no es una copia de KuraPlay.",
   "Library scan failed.": "El escaneo falló.",
   "Could not start the external player.": "No se pudo iniciar el reproductor externo.",
-  "Library move detected — relinked {h} history, {f} favorites and {m} metadata records.": "Movimiento detectado: se reenlazaron {h} historiales, {f} favoritos y {m} metadatos."
+  "Library move detected — relinked {h} history, {f} favorites and {m} metadata records.": "Movimiento detectado: se reenlazaron {h} historiales, {f} favoritos y {m} metadatos.",
+  "Updates": "Actualizaciones",
+  "Current version {v}": "Versión actual {v}",
+  "Check for updates": "Buscar actualizaciones",
+  "Checking for updates…": "Buscando actualizaciones…",
+  "You're on the latest version.": "Estás en la última versión.",
+  "Update {v} available - downloading…": "Actualización {v} disponible - descargando…",
+  "Restart to apply update": "Reinicia para aplicar la actualización",
+  "Update check failed (are you offline?).": "Falló la comprobación (¿sin conexión?).",
+  "Check for updates at startup": "Comprobar actualizaciones al iniciar",
+  "Silent check a few seconds after launch; offline simply does nothing.": "Comprobación silenciosa tras el arranque; sin conexión no hace nada.",
+  "Library folders": "Carpetas de la biblioteca",
+  "Remove": "Quitar"
 }

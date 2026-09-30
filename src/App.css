@@ -1891,3 +1891,21 @@ section.settings-section + section.settings-section { margin-top: 0; }
   border-top: 1px solid var(--border);
 }
 .search-toolbar { margin-bottom: 18px; }
+
+/* multi-library path list (round 24) */
+.library-paths {
+  display: flex; flex-direction: column; gap: 6px;
+  width: 100%; margin: 4px 0 10px;
+}
+.library-path-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 10px;
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.library-path-row .row-sub {
+  flex: 1; min-width: 0;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.library-path-row .icon-button { width: 30px; height: 30px; flex-shrink: 0; }

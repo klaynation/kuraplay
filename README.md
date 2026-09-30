@@ -1,5 +1,7 @@
 # KuraPlay
 
+> **Latest release: [v0.4.0](https://github.com/klaynation/kuraplay/releases/latest)** — Windows / macOS / Linux installers, signed auto-updates, six interface languages.
+
 **Your anime library. Offline.**
 
 KuraPlay is a local-first desktop app for Windows, macOS and Linux that turns a
@@ -33,8 +35,9 @@ builds are unsigned until code signing is configured. On Windows choose
 
 ## Features
 
-- **Library scanning** — point it at a folder; series, episodes and local art
-  (`poster/cover/folder/thumb/fanart`) are discovered automatically.
+- **Multi-library scanning** — point it at as many folders or drives as you like;
+  series, episodes and local art (`poster/cover/folder/thumb/fanart`) are
+  discovered automatically, and moving a library never orphans your history.
 - **Metadata, online or fully offline** — AniList → Jikan (MyAnimeList) →
   local Kodi-style `.nfo` files → folder-name fallback, in that order. Results
   are cached per-folder in `animeoffline.json` and in-app.
@@ -139,9 +142,23 @@ Local one-off builds: `npm run tauri build`.
 Artifacts are **unsigned** — first-launch warnings from SmartScreen/Gatekeeper
 are expected until a signing certificate is configured.
 
+## Screenshots
+
+_Add 2-4 PNGs to a `docs/` folder and embed them here before publishing —
+the Home dashboard, the player, and the Settings page sell the app faster
+than any paragraph._
+
+## Roadmap
+
+KuraPlay is feature-complete for its offline-first mission as of v0.4.0.
+Deliberately parked pending demand signals: online Discover tab, account
+login/sync, and cloud backups. If you want any of these, open an issue —
+demand is the roadmap.
+
 ## Licensing notes
 
-KuraPlay's own code: license TBD by the author (will do later).
+KuraPlay's own code: license TBD by the author (add a `LICENSE` file before
+publishing releases publicly).
 
 The Windows installer bundles mpv, which is
 **GPL-2.0-or-later / LGPL-2.1+**. Distributing it is permitted, but keep mpv's

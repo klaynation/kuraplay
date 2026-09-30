@@ -782,10 +782,13 @@ function normPath(p: string): string {
   return p.replace(/\\/g, "/").toLowerCase();
 }
 
-function relFrom(root: string, abs: string): string {
-  const r = normPath(root).replace(/\/+$/, "");
+function relFromAny(roots: string[], abs: string): string {
   const a = normPath(abs);
-  return a.startsWith(r + "/") ? a.slice(r.length + 1) : a;
+  for (const root of roots) {
+    const r = normPath(root).replace(/\/+$/, "");
+    if (a.startsWith(r + "/")) return a.slice(r.length + 1);
+  }
+  return a;
 }
 
 interface RelinkIndex {
@@ -793,8 +796,8 @@ interface RelinkIndex {
   bySuffix: { rel: string; abs: string }[];
 }
 
-function buildRelinkIndex(root: string, entries: { abs: string }[]): RelinkIndex {
-  const list = entries.map((e) => ({ rel: relFrom(root, e.abs), abs: e.abs }));
+function buildRelinkIndex(roots: string[], entries: { abs: string }[]): RelinkIndex {
+  const list = entries.map((e) => ({ rel: relFromAny(roots, e.abs), abs: e.abs }));
   list.sort((a, b) => b.rel.length - a.rel.length);
   return { exact: new Set(list.map((l) => normPath(l.abs))), bySuffix: list };
 }
@@ -1116,7 +1119,8 @@ async function saveMetadataToDisk(folderPath: string, metadata: AnimeMetadata) {
 // --------------------------------------------------
 
 function App() {
-  const [libraryPath, setLibraryPath] = useState<string | null>(null);
+  const [libraryPaths, setLibraryPaths] = useState<string[]>([]);
+  const libraryPath = libraryPaths[0] ?? null;
   const [animeFolders, setAnimeFolders] = useState<AnimeFolder[]>([]);
   const [scanning, setScanning] = useState(false);
   const [, setScanMessage] = useState("Checking for saved library...");
@@ -1537,24 +1541,17 @@ function App() {
   useEffect(() => {
     async function loadSavedLibrary() {
       try {
-        const result = await invoke<any>("load_library_path");
-        let savedPath = null;
-        if (typeof result === "string") {
-          savedPath = result;
-        } else if (result && typeof result === "object" && result.library_path) {
-          savedPath = result.library_path;
-        }
-
-        if (!savedPath) {
+        const saved = await invoke<string[]>("load_library_paths");
+        if (!saved || saved.length === 0) {
           setScanMessage("No library selected. Add your anime library to get started.");
           return;
         }
 
-        setLibraryPath(savedPath);
-        setScanMessage(`Loading library: ${savedPath}`);
+        setLibraryPaths(saved);
+        setScanMessage(`Loading library: ${saved.join(", ")}`);
         await new Promise((resolve) => setTimeout(resolve, 300));
-        
-        await scanLibrary(savedPath);
+
+        await scanAll(saved);
         // FIX: tracked in a ref so it is cancelled on unmount instead of
         // firing into a component that no longer exists.
         if (scanTimer.current != null) window.clearTimeout(scanTimer.current);
@@ -1877,14 +1874,16 @@ function App() {
     </div>
   ) : null;
 
-  async function scanLibrary(path: string) {
-    if (!path) { setScanMessage("No library folder selected."); return; }
+  async function scanAll(paths: string[]) {
+    const roots = paths.filter(Boolean);
+    if (roots.length === 0) { setScanMessage("No library folder selected."); return; }
     setScanning(true);
     setScanMessage("Scanning library...");
 
     try {
-      const entries = await readDir(path);
       const folders: AnimeFolder[] = [];
+      for (const path of roots) {
+      const entries = await readDir(path);
       const cleanRootPath = path.replace(/[/\\]+$/, "");
 
       for (const entry of entries) {
@@ -1972,16 +1971,17 @@ function App() {
           console.error(`Failed to scan subfolder ${entry.name}:`, error); 
         }
       }
+      }
 
       folders.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
 
       // Item 21: heal storage keys whose paths no longer exist (moved drives,
       // renamed roots). Runs on every scan; no-ops when nothing is dangling.
       const epIndex = buildRelinkIndex(
-        path,
+        roots,
         folders.flatMap((f) => f.episodes.map((ep) => ({ abs: ep.path })))
       );
-      const seriesIndex = buildRelinkIndex(path, folders.map((f) => ({ abs: f.path })));
+      const seriesIndex = buildRelinkIndex(roots, folders.map((f) => ({ abs: f.path })));
       const epRenames = computeRenames(Object.keys(watchProgress), epIndex);
       const favRenames = computeRenames(favorites, seriesIndex);
       const cacheRenames = computeRenames(Array.from(metadataCache.keys()), seriesIndex);
@@ -2025,9 +2025,16 @@ function App() {
   }
 
   async function handleRefreshLibrary() {
-    if (!libraryPath) { showToast(t("No library folder set.")); return; }
+    if (libraryPaths.length === 0) { showToast(t("No library folder set.")); return; }
     showToast(t("Refreshing library & checking for new items..."));
-    await scanLibrary(libraryPath);
+    await scanAll(libraryPaths);
+  }
+
+  async function removeLibraryPath(path: string) {
+    const next = libraryPaths.filter((p) => p !== path);
+    setLibraryPaths(next);
+    await invoke("save_library_paths", { paths: next }).catch(() => undefined);
+    await scanAll(next);
   }
 
   async function matchAllAnime() {
@@ -2106,17 +2113,19 @@ function App() {
 
   async function addAnimeLibrary() {
     try {
-      const selected = await open({ directory: true, multiple: false, title: "Select your anime library" });
-      if (typeof selected !== "string") return;
-      
-      setLibraryPath(selected);
+      const selected = await open({ directory: true, multiple: true, title: "Select your anime library" });
+      if (!selected) return;
+      const picked = Array.isArray(selected) ? selected : [selected];
+      if (picked.length === 0) return;
+      const merged = Array.from(new Set([...libraryPaths, ...picked]));
+      setLibraryPaths(merged);
       setSelectedAnime(null);
       setScanMessage("Saving library location...");
-      
-      await invoke("save_library_path", { libraryPath: selected, library_path: selected });
-      
+
+      await invoke("save_library_paths", { paths: merged });
+
       notify("success", t("Library saved."));
-      await scanLibrary(selected);
+      await scanAll(merged);
       setCurrentPage("home");
     } catch (error) {
       notify("error", t("Could not save library folder."));
@@ -2688,15 +2697,31 @@ function App() {
                   <p>{t("The folder KuraPlay scans for your local collection.")}</p>
                 </div>
                 <div className="settings-group">
-                  <div className="settings-row">
-                    <div className="row-icon"><FolderIcon /></div>
-                    <div className="row-text">
-                      <div className="row-title">{t("Library folder")}</div>
-                      <div className={`row-sub ${libraryPath ? "mono" : ""}`}>{libraryPath || t("No library folder selected yet.")}</div>
+                  <div className="settings-row column">
+                    <div className="row-title">{t("Library folders")}</div>
+                    <div className="library-paths">
+                      {libraryPaths.length === 0 && (
+                        <div className="row-sub">{t("No library folder selected yet.")}</div>
+                      )}
+                      {libraryPaths.map((p) => (
+                        <div className="library-path-row" key={p}>
+                          <span className="row-sub mono">{p}</span>
+                          <button
+                            className="icon-button ghost"
+                            aria-label={t("Remove")}
+                            title={t("Remove")}
+                            onClick={() => { void removeLibraryPath(p); }}
+                          >
+                            <XIcon size={14} />
+                          </button>
+                        </div>
+                      ))}
                     </div>
-                    <button className="primary-button" onClick={addAnimeLibrary} disabled={scanning}>
-                      <FolderIcon size={15} /> {libraryPath ? t("Change") : t("Choose folder")}
-                    </button>
+                    <div className="row-actions">
+                      <button className="primary-button" onClick={addAnimeLibrary} disabled={scanning}>
+                        <FolderIcon size={15} /> {t("Add library")}
+                      </button>
+                    </div>
                   </div>
                   <div className="settings-row stats-row">
                     <div className="stat-tile">

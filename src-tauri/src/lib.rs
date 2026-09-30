@@ -109,7 +109,10 @@ struct AnimeMetadata {
 
 #[derive(Debug, Serialize, Deserialize)]
 struct AppConfig {
+    /// Legacy single-path key, kept for old config files.
     library_path: Option<String>,
+    /// Multi-library roots (current).
+    library_paths: Option<Vec<String>>,
     /// Optional explicit override for the external player binary.
     mpv_path: Option<String>,
 }
@@ -140,6 +143,48 @@ fn get_config_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 }
 
 #[tauri::command]
+fn save_library_paths(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
+    let config_path = get_config_path(&app)?;
+    let mut config: AppConfig = if config_path.exists() {
+        let json = fs::read_to_string(&config_path).map_err(|error| error.to_string())?;
+        serde_json::from_str(&json).unwrap_or(AppConfig {
+            library_path: None,
+            library_paths: None,
+            mpv_path: None,
+        })
+    } else {
+        AppConfig {
+            library_path: None,
+            library_paths: None,
+            mpv_path: None,
+        }
+    };
+    config.library_paths = Some(paths.clone());
+    config.library_path = paths.first().cloned();
+    let json = serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?;
+    fs::write(&config_path, json).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn load_library_paths(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+    let config_path = get_config_path(&app)?;
+    if !config_path.exists() {
+        return Ok(vec![]);
+    }
+    let json = fs::read_to_string(&config_path).map_err(|error| error.to_string())?;
+    let config: AppConfig = serde_json::from_str(&json).map_err(|error| error.to_string())?;
+    let mut out = config.library_paths.unwrap_or_default();
+    if out.is_empty() {
+        if let Some(legacy) = config.library_path {
+            out.push(legacy);
+        }
+    }
+    out.retain(|p| !p.is_empty());
+    Ok(out)
+}
+
+#[tauri::command]
 fn save_library_path(app: tauri::AppHandle, library_path: String) -> Result<(), String> {
     let config_path = get_config_path(&app)?;
 
@@ -148,11 +193,13 @@ fn save_library_path(app: tauri::AppHandle, library_path: String) -> Result<(), 
         let json = fs::read_to_string(&config_path).map_err(|error| error.to_string())?;
         serde_json::from_str(&json).unwrap_or(AppConfig {
             library_path: None,
+            library_paths: None,
             mpv_path: None,
         })
     } else {
         AppConfig {
             library_path: None,
+            library_paths: None,
             mpv_path: None,
         }
     };
@@ -325,6 +372,7 @@ fn set_mpv_path(app: tauri::AppHandle, path: Option<String>) -> Result<(), Strin
     } else {
         AppConfig {
             library_path: None,
+            library_paths: None,
             mpv_path: None,
         }
     };
@@ -658,7 +706,9 @@ pub fn run() {
             set_mpv_path,
             spawn_player,
             set_titlebar_colors,
-            cache_image
+            cache_image,
+            save_library_paths,
+            load_library_paths
         ])
         .run(tauri::generate_context!())
         .expect("error while running animeoffline application");

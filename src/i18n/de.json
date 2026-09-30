@@ -231,5 +231,17 @@
   "That file is not a KuraPlay backup.": "Diese Datei ist kein KuraPlay-Backup.",
   "Library scan failed.": "Scan fehlgeschlagen.",
   "Could not start the external player.": "Externer Player konnte nicht gestartet werden.",
-  "Library move detected — relinked {h} history, {f} favorites and {m} metadata records.": "Verschiebung erkannt: {h} Verlaufs-, {f} Favoriten- und {m} Metadaten-Einträge neu verknüpft."
+  "Library move detected — relinked {h} history, {f} favorites and {m} metadata records.": "Verschiebung erkannt: {h} Verlaufs-, {f} Favoriten- und {m} Metadaten-Einträge neu verknüpft.",
+  "Updates": "Updates",
+  "Current version {v}": "Aktuelle Version {v}",
+  "Check for updates": "Nach Updates suchen",
+  "Checking for updates…": "Suche nach Updates…",
+  "You're on the latest version.": "Du bist auf dem neuesten Stand.",
+  "Update {v} available - downloading…": "Update {v} verfügbar - wird geladen…",
+  "Restart to apply update": "Neustart zum Anwenden",
+  "Update check failed (are you offline?).": "Update-Prüfung fehlgeschlagen (offline?).",
+  "Check for updates at startup": "Beim Start nach Updates suchen",
+  "Silent check a few seconds after launch; offline simply does nothing.": "Stille Prüfung kurz nach dem Start; offline passiert nichts.",
+  "Library folders": "Bibliotheksordner",
+  "Remove": "Entfernen"
 }
